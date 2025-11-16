@@ -7,8 +7,7 @@ from . import (
 )
 from .backend import (
     ModBase,
-    ModNumpy,
-    ModTensorflow,
+    ModTorch,
 )
 from .core import (
     Array,
