@@ -3,7 +3,8 @@ import sys
 
 import numpy
 
-from .backend import ModNumpy, ModTensorflow
+# from .backend import ModNumpy, ModTensorflow
+from .backend import ModTorch
 
 if not int(os.environ.get("ODIL_MT", 0)):
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -26,52 +27,90 @@ enable_jit = bool(int(os.environ.get("ODIL_JIT", 0)))
 
 backend_name = os.environ.get("ODIL_BACKEND", "")
 
+
 if not backend_name:
     try:
-        import tensorflow as tf
-
-        backend_name = "tf"
+        import torch
+        backend_name = "torch"
     except ImportError:
+        print("Import Torch error in the runtime.py")
         pass
 
-if not backend_name:
-    try:
-        import jax
+# if not backend_name:
+#     try:
+#         import tensorflow as tf
 
-        backend_name = "jax"
-    except ImportError:
-        sys.stderr.write("Cannot select a default backend. Tried: tensorflow, jax\n")
-        exit(1)
+#         backend_name = "tf"
+#     except ImportError:
+#         pass
 
-if backend_name == "tf":
-    import tensorflow as tf
+# if not backend_name:
+#     try:
+#         import jax
 
-    tf.config.threading.set_inter_op_parallelism_threads(1)
-    tf.config.threading.set_intra_op_parallelism_threads(1)
-    _gpus = tf.config.list_physical_devices("GPU")
-    if _gpus:
-        try:
-            for gpu in _gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logical_gpus = tf.config.list_logical_devices("GPU")
-        except RuntimeError as e:
-            print(e)
+#         backend_name = "jax"
+#     except ImportError:
+#         sys.stderr.write("Cannot select a default backend. Tried: tensorflow, jax\n")
+#         exit(1)
 
-    jax = None
-    mod = ModTensorflow(tf)
-elif backend_name == "jax":
-    tf = None
-    import jax
 
+if backend_name == "torch":
+    import torch 
+    
+    # GPU 内存配置
     if not enable_gpu:
-        jax.config.update("jax_platform_name", "cpu")
-    # Enable support for float64 operations.
-    jax.config.update("jax_enable_x64", True)
+        # 强制使用 CPU
+        torch.cuda.is_available = lambda: False
 
-    mod = ModNumpy(jax.numpy, jax=jax)
+    else:
+        if torch.cuda.is_available():
+            # 设置 GPU 内存增长（PyTorch 默认就是按需分配，但可以显式设置）
+            torch.cuda.empty_cache()
+            # 设置当前设备（通常使用第0张GPU）
+            torch.cuda.set_device("cuda:0")
+            # 更精细的内存配置（可选）
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    # 初始化模块（根据你的实际需求实现 ModTorch）
+    mod = ModTorch(torch)
+    tf = None
+    jax = None
+
 else:
-    sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: tf, jax\n")
+    sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: torch\n")
     exit(1)
+
+# if backend_name == "tf":
+#     import tensorflow as tf
+
+#     tf.config.threading.set_inter_op_parallelism_threads(1)
+#     tf.config.threading.set_intra_op_parallelism_threads(1)
+#     _gpus = tf.config.list_physical_devices("GPU")
+#     if _gpus:
+#         try:
+#             for gpu in _gpus:
+#                 tf.config.experimental.set_memory_growth(gpu, True)
+#             logical_gpus = tf.config.list_logical_devices("GPU")
+#         except RuntimeError as e:
+#             print(e)
+
+#     jax = None
+#     mod = ModTensorflow(tf)
+    
+
+# elif backend_name == "jax":
+#     tf = None
+#     import jax
+
+#     if not enable_gpu:
+#         jax.config.update("jax_platform_name", "cpu")
+#     # Enable support for float64 operations.
+#     jax.config.update("jax_enable_x64", True)
+
+#     mod = ModNumpy(jax.numpy, jax=jax)
+# else:
+#     sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: tf, jax\n")
+#     exit(1)
 
 # Default data type.
 dtype_name = os.environ.get("ODIL_DTYPE", "float32")
@@ -80,3 +119,4 @@ if dtype_name in ["float32", "float64"]:
 else:
     sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
     exit(1)
+
