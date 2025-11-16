@@ -4,7 +4,8 @@ import pickle
 import numpy as np
 
 from . import core_min
-from .backend import ModTensorflow
+# from .backend import ModTensorflow
+from .backend import ModTorch
 from .util import assert_equal
 
 
@@ -315,6 +316,9 @@ class Domain:
             array = field.array
             if array is None:
                 array = mod.zeros(self._get_field_shape(cshape, loc=loc), dtype=self.dtype)
+            
+            print("self.dtype: ", self.dtype)
+            print("array: ", type(array))
             array = mod.variable(array, dtype=self.dtype)
             assert_equal(array.shape, self._get_field_shape(cshape, loc=loc))
             return Field(array, loc=loc, cshape=cshape)
@@ -799,8 +803,8 @@ def make_neural_net(layers, dtype, mod, initializer="lecun", func_in=None, func_
     biases = []
     for ni, no in zip(layers[:-1], layers[1:]):
         scale = get_scale(ni, no)
-        weights.append(mod.random.uniform(shape=(no, ni), minval=-scale, maxval=scale, dtype=dtype))  #
-        biases.append(mod.zeros(no, dtype=dtype))
+        weights.append(np.random.uniform(shape=(no, ni), minval=-scale, maxval=scale, dtype=dtype))  #
+        biases.append(np.zeros(no, dtype=dtype))
     return NeuralNet(weights, biases, func_in=func_in, func_out=func_out, activation=activation)
 
 
@@ -998,7 +1002,7 @@ class Problem:
             Discrete operator returning fields on grid.
             Each field corresponds to an equation to be solved.
             Arguments are:
-                mod: module with mathematical functions (tensorflow, numpy)
+                mod: module with mathematical functions (torch, tensorflow not supported)
                 ctx: instance of Context
         domain: instance of Domain
         """
@@ -1011,12 +1015,13 @@ class Problem:
         if "epoch" not in tracers:
             if mod.tf:
                 tracers["epoch"] = mod.tf.Variable(0)
+            # if mod.torch:
+                # tracers["epoch"] = 0
             else:
                 tracers["epoch"] = 0
         self.tracers = tracers
         if jit is None:
             from . import runtime
-
             jit = runtime.enable_jit
         self.jit = jit
 
@@ -1024,91 +1029,150 @@ class Problem:
         self._cache_eval_operator = dict()
         self._cache_eval_operator_grad = dict()
 
-        if isinstance(mod, ModTensorflow):
-            self._eval_loss_grad = self._eval_loss_grad_tf
+
+        if isinstance(mod, ModTorch):
+            self._eval_loss_grad = self._eval_loss_grad_torch
             self._eval_operator = self._eval_operator_tf
-            self._eval_operator_grad = self._eval_operator_grad_tf
-        elif mod.jax is not None:
-            self._eval_loss_grad = self._eval_loss_grad_jax
-            self._eval_operator = self._eval_operator_jax
-            self._eval_operator_grad = self._eval_operator_grad_jax
+            self._eval_operator_grad = self._eval_operator_grad_torch
         else:
             raise NotImplementedError("Unsupported mod={:}".format(mod))
 
-    def _eval_loss_grad_tf(self, state):
+        # if isinstance(mod, ModTensorflow):
+        #     self._eval_loss_grad = self._eval_loss_grad_tf
+        #     self._eval_operator = self._eval_operator_tf
+        #     self._eval_operator_grad = self._eval_operator_grad_tf
+        # elif mod.jax is not None:
+        #     self._eval_loss_grad = self._eval_loss_grad_jax
+        #     self._eval_operator = self._eval_operator_jax
+        #     self._eval_operator_grad = self._eval_operator_grad_jax
+        # else:
+        #     raise NotImplementedError("Unsupported mod={:}".format(mod))
+
+    def _eval_loss_grad_torch(self, state):
         domain = self.domain
         mod = domain.mod
-        tf = mod.tf
-        cache = self._cache_eval_loss_grad
+        torch = mod.torch
+        cache = self._cache_eval_loss_grad #dict
 
         if "state" not in cache:
             cache["state"] = domain.init_state(state)
+        
+        def func(arrays, tracers):
+             # ensure require_grad=True in array
+            arrays = [arr.detach().requires_grad_(True) for arr in arrays]
 
-        def func(arrays):
-            with tf.GradientTape(persistent=False, watch_accessed_variables=False) as tape:
-                domain.arrays_to_state(arrays, cache["state"])
-                ctx = Context(domain, cache["state"], watch_func=tape.watch, extra=self.extra, tracers=self.tracers)
-                ff = self.operator(ctx)
-                assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
-                names = [f[0] if isinstance(f, tuple) else "" for f in ff]
-                nonempty = [name for name in names if name]
-                assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
-                values = [f[1] if isinstance(f, tuple) else f for f in ff]
-                terms = [
-                    mod.mean(v.value) if isinstance(v, Context.Raw) else mod.mean(mod.square(v)) for v in values  #
-                ]
-                loss = sum(terms)
-                norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]  #
-            grads = tape.gradient(loss, arrays)
-            grads = [g if g is not None else mod.zeros_like(u) for u, g in zip(arrays, grads)]
-            if "names" not in cache:
-                cache["names"] = names
-            return loss, grads, terms, norms
-
-        if "func" not in cache:
-            cache["func"] = tf.function(func, jit_compile=self.jit)
-
-        # Evaluate gradients.
-        arrays = domain.arrays_from_state(state)
-        loss, grads, terms, norms = cache["func"](arrays)
-        return loss, grads, terms, cache["names"], norms
-
-    def _eval_loss_grad_jax(self, state):
-        domain = self.domain
-        mod = domain.mod
-        jax = mod.jax
-        cache = self._cache_eval_loss_grad
-
-        def eval_loss(arrays, tracers):
-            if "state" not in cache:
-                cache["state"] = domain.init_state(state)
+            # forward
             domain.arrays_to_state(arrays, cache["state"])
             ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
             ff = self.operator(ctx)
+
             assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
             names = [f[0] if isinstance(f, tuple) else "" for f in ff]
             nonempty = [name for name in names if name]
             assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
             values = [f[1] if isinstance(f, tuple) else f for f in ff]
-            terms = [mod.mean(f.value) if isinstance(f, Context.Raw) else mod.mean(mod.square(f)) for f in values]
+            terms = [
+                mod.mean(v.value) if isinstance(v, Context.Raw) else mod.mean(mod.square(v)) for v in values
+            ]
             loss = sum(terms)
-            norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]  #
-            return loss, (terms, names, norms)
-
-        def func(arrays, tracers):
-            # Create gradient function.
-            fgrad = jax.value_and_grad(eval_loss, argnums=[0], has_aux=True)
-            (loss, (terms, names, norms)), grads = fgrad(arrays, tracers)
-            # Use cache to store the names as JAX does not support `str`.
-            cache["names"] = names
-            return loss, grads[0], terms, norms
+            norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]
+            
+            # backward 
+            grads = torch.autograd.grad(loss, arrays, create_graph=False, retain_graph=False)
+            grads = [g if g is not None else torch.zeros_like(u) for u, g in zip(arrays, grads)]
+        
+            if "names" not in cache:
+                cache["names"] = names
+            return loss.detach(), grads, terms, norms
 
         if "func" not in cache:
-            cache["func"] = jax.jit(func)
+            if self.jit:
+                cache["func"] = torch.jit.script(func)
+            else:
+                cache["func"] = func
 
+        # calculate losses and gradients
         arrays = domain.arrays_from_state(state)
-        loss, grads, terms, norms = cache["func"](arrays, self.tracers)
+        loss, grads, terms, norms = cache["func"](arrays, self.trancers)
         return loss, grads, terms, cache["names"], norms
+
+
+
+
+    # def _eval_loss_grad_tf(self, state):
+    #     domain = self.domain
+    #     mod = domain.mod
+    #     tf = mod.tf
+    #     cache = self._cache_eval_loss_grad
+
+    #     if "state" not in cache:
+    #         cache["state"] = domain.init_state(state)
+           
+    #     def func(arrays):
+    #         with tf.GradientTape(persistent=False, watch_accessed_variables=False) as tape:
+    #             domain.arrays_to_state(arrays, cache["state"])
+    #             ctx = Context(domain, cache["state"], watch_func=tape.watch, extra=self.extra, tracers=self.tracers)
+    #             ff = self.operator(ctx)
+    #             assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
+    #             names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+    #             nonempty = [name for name in names if name]
+    #             assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
+    #             values = [f[1] if isinstance(f, tuple) else f for f in ff]
+    #             terms = [
+    #                 mod.mean(v.value) if isinstance(v, Context.Raw) else mod.mean(mod.square(v)) for v in values  #
+    #             ]
+    #             loss = sum(terms)
+    #             norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]  #
+    #         grads = tape.gradient(loss, arrays)
+    #         grads = [g if g is not None else mod.zeros_like(u) for u, g in zip(arrays, grads)]
+    #         if "names" not in cache:
+    #             cache["names"] = names
+    #         return loss, grads, terms, norms
+
+    #     if "func" not in cache:
+    #         cache["func"] = tf.function(func, jit_compile=self.jit)
+
+    #     # Evaluate gradients.
+    #     arrays = domain.arrays_from_state(state)
+    #     loss, grads, terms, norms = cache["func"](arrays)
+    #     return loss, grads, terms, cache["names"], norms
+
+    # def _eval_loss_grad_jax(self, state):
+    #     domain = self.domain
+    #     mod = domain.mod
+    #     jax = mod.jax
+    #     cache = self._cache_eval_loss_grad
+
+    #     def eval_loss(arrays, tracers):
+    #         if "state" not in cache:
+    #             cache["state"] = domain.init_state(state)
+    #         domain.arrays_to_state(arrays, cache["state"])
+    #         ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
+    #         ff = self.operator(ctx)
+    #         assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
+    #         names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+    #         nonempty = [name for name in names if name]
+    #         assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
+    #         values = [f[1] if isinstance(f, tuple) else f for f in ff]
+    #         terms = [mod.mean(f.value) if isinstance(f, Context.Raw) else mod.mean(mod.square(f)) for f in values]
+    #         loss = sum(terms)
+    #         norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]  #
+    #         return loss, (terms, names, norms)
+
+    #     def func(arrays, tracers):
+    #         # Create gradient function.
+    #         fgrad = jax.value_and_grad(eval_loss, argnums=[0], has_aux=True)
+    #         (loss, (terms, names, norms)), grads = fgrad(arrays, tracers)
+    #         # Use cache to store the names as JAX does not support `str`.
+    #         cache["names"] = names
+    #         return loss, grads[0], terms, norms
+
+    #     if "func" not in cache:
+    #         cache["func"] = jax.jit(func)
+
+    #     arrays = domain.arrays_from_state(state)
+    #     loss, grads, terms, norms = cache["func"](arrays, self.tracers)
+    #     return loss, grads, terms, cache["names"], norms
 
     def linearize(self, state, modsp=None):
         """
@@ -1240,11 +1304,11 @@ class Problem:
         norms = list(map(np.array, norms))
         return loss, grads, terms, names, norms
 
-    def _eval_operator_tf(self, state):
+    def _eval_operator_torch(self, state):
         domain = self.domain
         mod = domain.mod
-        tf = mod.tf
-        cache = self._cache_eval_operator
+        torch = mod.torch
+        cache = self._cache_eval_operator # dict
 
         if "state" not in cache:
             cache["state"] = domain.init_state(state)
@@ -1261,39 +1325,71 @@ class Problem:
             return values
 
         if "func" not in cache:
-            cache["func"] = tf.function(func, jit_compile=self.jit)
+            if self.jit:
+                cache["func"] = torch.jit.script(func)
+            else:
+                cache["func"] = func
 
         # Evaluate gradients.
         arrays = domain.arrays_from_state(state)
         values = cache["func"](arrays, self.tracers)
         return values, cache["names"]
 
-    def _eval_operator_jax(self, state):
-        domain = self.domain
-        mod = domain.mod
-        jax = mod.jax
-        cache = self._cache_eval_operator
 
-        def func(arrays, tracers):
-            if "state" not in cache:
-                cache["state"] = domain.init_state(state)
-            domain.arrays_to_state(arrays, cache["state"])
-            ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
-            ff = self.operator(ctx)
-            assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
-            names = [f[0] if isinstance(f, tuple) else "" for f in ff]
-            values = [f[1] if isinstance(f, tuple) else f for f in ff]
-            values = [v.value if isinstance(v, Context.Raw) else v for v in values]
-            if "names" not in cache:
-                cache["names"] = names
-            return values
+    # def _eval_operator_tf(self, state):
+    #     domain = self.domain
+    #     mod = domain.mod
+    #     tf = mod.tf
+    #     cache = self._cache_eval_operator
 
-        if "func" not in cache:
-            cache["func"] = jax.jit(func)
+    #     if "state" not in cache:
+    #         cache["state"] = domain.init_state(state)
 
-        arrays = domain.arrays_from_state(state)
-        values = cache["func"](arrays, self.tracers)
-        return values, cache["names"]
+    #     def func(arrays, tracers):
+    #         domain.arrays_to_state(arrays, cache["state"])
+    #         ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
+    #         ff = self.operator(ctx)
+    #         assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
+    #         names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+    #         values = [f[1] if isinstance(f, tuple) else f for f in ff]
+    #         if "names" not in cache:
+    #             cache["names"] = names
+    #         return values
+
+    #     if "func" not in cache:
+    #         cache["func"] = tf.function(func, jit_compile=self.jit)
+
+    #     # Evaluate gradients.
+    #     arrays = domain.arrays_from_state(state)
+    #     values = cache["func"](arrays, self.tracers)
+    #     return values, cache["names"]
+
+    # def _eval_operator_jax(self, state):
+    #     domain = self.domain
+    #     mod = domain.mod
+    #     jax = mod.jax
+    #     cache = self._cache_eval_operator
+
+    #     def func(arrays, tracers):
+    #         if "state" not in cache:
+    #             cache["state"] = domain.init_state(state)
+    #         domain.arrays_to_state(arrays, cache["state"])
+    #         ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
+    #         ff = self.operator(ctx)
+    #         assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
+    #         names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+    #         values = [f[1] if isinstance(f, tuple) else f for f in ff]
+    #         values = [v.value if isinstance(v, Context.Raw) else v for v in values]
+    #         if "names" not in cache:
+    #             cache["names"] = names
+    #         return values
+
+    #     if "func" not in cache:
+    #         cache["func"] = jax.jit(func)
+
+    #     arrays = domain.arrays_from_state(state)
+    #     values = cache["func"](arrays, self.tracers)
+    #     return values, cache["names"]
 
     def eval_operator(self, state):
         """
@@ -1310,58 +1406,117 @@ class Problem:
         values, names = self._eval_operator(state)
         return values, names
 
-    def _eval_operator_grad_tf(self, state):
+
+
+    def _eval_operator_grad_torch(self, state):
         domain = self.domain
         mod = domain.mod
-        tf = mod.tf
+        torch = mod.torch
         cache = self._cache_eval_operator_grad
 
         if "state" not in cache:
             cache["state"] = domain.init_state(state)
-
+        
         def func(arrays, tracers):
-            with tf.GradientTape(persistent=True, watch_accessed_variables=False) as tape:
 
-                domain.arrays_to_state(arrays, cache["state"])
-                ctx = Context(
-                    domain,
-                    cache["state"],
-                    watch_func=tape.watch,
-                    extra=self.extra,
-                    tracers=tracers,
-                    distinct_shift=True,
+            domain.arrays_to_state(arrays, cache["state"])
+            ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers, distinct_shift=True)
+
+            ff = self.operator(ctx)
+            assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
+            names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+            nonempty = [name for name in names if name]
+            assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
+            values = [f[1] if isinstance(f, tuple) else f for f in ff]
+            sums = [torch.sum(v) for v in values]
+
+            grads = [ ]
+            for v,s in zip(values, sums):
+                # equals to `g = tape.gradient(s, ctx.desc_to_array)`
+                g_list = torch.autograd.grad(s, ctx.desc_to_array, retain_graph=True, create_graph=False)
+                g = dict(zip(ctx.desc_to_array.keys(), g_list))
+
+            # jac = tape.jacobian(v, ctx.key_to_array_jac)
+            if ctx.key_to_array_jac:
+                jac_list = torch.autograd.grad(
+                    v, 
+                    ctx.key_to_array_jac,
+                    retain_graph=True,
+                    allow_unused=True,
+                    grad_outputs=torch.ones_like(v)  # 表示求 ∂v/∂x 的“累计”
                 )
-                ff = self.operator(ctx)
-                assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
-                names = [f[0] if isinstance(f, tuple) else "" for f in ff]
-                nonempty = [name for name in names if name]
-                assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
-                values = [f[1] if isinstance(f, tuple) else f for f in ff]
-                sums = [tf.reduce_sum(v) for v in values]
-            grads = [tape.gradient(s, ctx.desc_to_array) for s in sums]
-            # Having experimental_use_pfor=True leads to excessive memory usage,
-            # sufficient to store a dense matrix of size `prod(domain.shape)**2`.
-            grads = []
-            for v, s in zip(values, sums):
-                g = tape.gradient(s, ctx.desc_to_array)
-                if ctx.key_to_array_jac:
-                    jac = tape.jacobian(v, ctx.key_to_array_jac, experimental_use_pfor=False)
-                    g.update(jac)
-                grads.append(g)
+                jac = dict(zip(ctx.key_to_array_jac.keys(), jac_list))
+                g.update(jac)
+
+            grads.append(g)
+
             if "names" not in cache:
                 cache["names"] = names
-            return values, grads
 
-        if "func" not in cache:
-            cache["func"] = tf.function(func, jit_compile=self.jit)
+            return values, grads
+    
+        # if "func" not in cache:
+        #     cache["func"] = tf.function(func, jit_compile=self.jit)
 
         # Evaluate gradients.
         arrays = domain.arrays_from_state(state)
         values, grads = cache["func"](arrays, self.tracers)
         return values, grads, cache["names"]
 
-    def _eval_operator_grad_jax(self, state):
-        raise NotImplementedError()
+
+
+    # def _eval_operator_grad_tf(self, state):
+    #     domain = self.domain
+    #     mod = domain.mod
+    #     tf = mod.tf
+    #     cache = self._cache_eval_operator_grad
+
+    #     if "state" not in cache:
+    #         cache["state"] = domain.init_state(state)
+
+    #     def func(arrays, tracers):
+    #         with tf.GradientTape(persistent=True, watch_accessed_variables=False) as tape:
+
+    #             domain.arrays_to_state(arrays, cache["state"])
+    #             ctx = Context(
+    #                 domain,
+    #                 cache["state"],
+    #                 watch_func=tape.watch,
+    #                 extra=self.extra,
+    #                 tracers=tracers,
+    #                 distinct_shift=True,
+    #             )
+    #             ff = self.operator(ctx)
+    #             assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
+    #             names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+    #             nonempty = [name for name in names if name]
+    #             assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
+    #             values = [f[1] if isinstance(f, tuple) else f for f in ff]
+    #             sums = [tf.reduce_sum(v) for v in values]
+    #         grads = [tape.gradient(s, ctx.desc_to_array) for s in sums] # maybe a bug
+    #         # Having experimental_use_pfor=True leads to excessive memory usage,
+    #         # sufficient to store a dense matrix of size `prod(domain.shape)**2`.
+    #         grads = []
+    #         for v, s in zip(values, sums):
+    #             g = tape.gradient(s, ctx.desc_to_array)
+    #             if ctx.key_to_array_jac:
+    #                 jac = tape.jacobian(v, ctx.key_to_array_jac, experimental_use_pfor=False)
+    #                 g.update(jac)
+    #             grads.append(g)
+    #         if "names" not in cache:
+    #             cache["names"] = names
+    #         return values, grads
+
+    #     if "func" not in cache:
+    #         cache["func"] = tf.function(func, jit_compile=self.jit)
+
+    #     # Evaluate gradients.
+    #     arrays = domain.arrays_from_state(state)
+    #     values, grads = cache["func"](arrays, self.tracers)
+    #     return values, grads, cache["names"]
+
+    # def _eval_operator_grad_jax(self, state):
+    #     raise NotImplementedError()
 
     def eval_operator_grad(self, state):
         """
