@@ -50,14 +50,22 @@ class Domain:
         self.ndim = ndim
         self.cshape = cshape
         self.dimnames = dimnames
+
+        from . import runtime
+        self.device = runtime.device
+
         if dtype is None:
             from . import runtime
-
             dtype = runtime.dtype
         self.dtype = dtype
-        self.lower = (np.ones(ndim, dtype=dtype) * lower).astype(dtype)
-        self.upper = (np.ones(ndim, dtype=dtype) * upper).astype(dtype)
         self.mod = mod
+        # dtype = np.float32
+
+        lower_array = (np.ones(ndim, ) * lower)
+        upper_array = (np.ones(ndim, ) * upper)
+
+        self.lower = self.mod.array2tensor(lower_array, torch_dtype=self.dtype)
+        self.upper = self.mod.array2tensor(upper_array, torch_dtype=self.dtype)
 
         # Multigrid decomposition
         self.multigrid = multigrid
@@ -93,19 +101,22 @@ class Domain:
     def cast(self, value, dtype=None):
         dtype = dtype or self.dtype
         return self.mod.cast(value, dtype)
-
+ 
     def get_minimal(self):
+        """No use"""
         return core_min.Domain(self)
 
     def _points_cell_1d(self, d):
-        x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False, dtype=self.dtype)
+        # x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False, dtype=self.dtype)
+        x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False)
         if len(x) > 1:
             x += (x[1] - x[0]) * 0.5
-        return x
+        return self.mod.array2tensor(x, self.dtype).to(self.device) # return tensor
 
     def _points_node_1d(self, d):
-        x = np.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1, dtype=self.dtype)
-        return x
+        # x = np.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1, dtype=self.dtype)
+        x = np.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1)
+        return self.mod.array2tensor(x, self.dtype).to(self.device)
 
     def _points_1d(self, d, loc):
         if loc == "c":
@@ -137,10 +148,12 @@ class Domain:
         return res
 
     def _indices_cell_1d(self, d):
-        return np.arange(self.cshape[d], dtype=int)
+        x = np.arange(self.cshape[d], dtype=int)
+        return self.mod.array2tensor(x, torch_dtype= self.mod.type_convert(np.int64)).to(self.device)
 
     def _indices_node_1d(self, d):
-        return np.arange(self.cshape[d] + 1, dtype=int)
+        x = np.arange(self.cshape[d] + 1, dtype=int)
+        return self.mod.array2tensor(x, torch_dtype= self.mod.type_convert(np.int64)).to(self.device)
 
     def _indices_1d(self, d, loc):
         if loc == "c":
@@ -293,7 +306,10 @@ class Domain:
         method = method or self.mg_interp
         terms = [Field(field.array / factors[0], loc=field.loc, cshape=field.cshape)]
         for cshape in cshapes[1:]:
-            array = mod.zeros(self._get_field_shape(cshape, loc=field.loc), dtype=self.dtype)
+            # array = mod.zeros(self._get_field_shape(cshape, loc=field.loc), dtype=self.dtype) # bug!
+            array = mod.zeros(self._get_field_shape(cshape, loc=field.loc), dtype=self.dtype).to(self.device) # bug!
+            array.requires_grad_(True)
+            # array = np.zeros(self._get_field_shape(cshape, loc=field.loc), dtype=self.dtype)
             terms.append(Field(array, loc=field.loc, cshape=cshape))
         return MultigridField(terms=terms, loc=field.loc, factors=factors, method=method)
 
@@ -315,11 +331,13 @@ class Domain:
             assert_equal(len(loc), ndim)
             array = field.array
             if array is None:
-                array = mod.zeros(self._get_field_shape(cshape, loc=loc), dtype=self.dtype)
-            
-            print("self.dtype: ", self.dtype)
-            print("array: ", type(array))
-            array = mod.variable(array, dtype=self.dtype)
+                # array = mod.zeros(self._get_field_shape(cshape, loc=loc), dtype=self.dtype) 
+                array = np.zeros(self._get_field_shape(cshape, loc=loc), dtype=self.dtype) 
+
+
+            array = mod.variable(array, dtype= mod.type_convert(self.dtype) ).to(self.device)
+            array.requires_grad_(True) ## enable gradients
+
             assert_equal(array.shape, self._get_field_shape(cshape, loc=loc))
             return Field(array, loc=loc, cshape=cshape)
         elif isinstance(field, MultigridField):
@@ -344,7 +362,10 @@ class Domain:
             array = field.array
             if array is None:
                 array = mod.zeros(field.shape, dtype=self.dtype)
-            array = mod.variable(array, dtype=self.dtype)
+
+            array = mod.variable(array, dtype=self.dtype).to(self.device)
+            array.requires_grad_(True) ## enable gradients
+
             return Array(array, field.shape)
         else:
             raise TypeError("Unknown field type '{}'".format(type(field).__name__))
@@ -490,6 +511,7 @@ class Domain:
         if len(shift) != self.ndim:
             raise RuntimeError("Expected {} shift components, got shift={}".format(self.ndim, shift))
         array = self.get_regular_array(field)
+        # exit(0)
         return mod.roll(array, np.negative(shift), range(self.ndim))
 
     def neural_net(self, state, key):
@@ -645,7 +667,6 @@ def interp_to_finer(u, loc=None, method=None, mod=None, depth=1):
     ur = mod.pad(u, pad_width=pad_width, mode="reflect")
     us = mod.pad(u, pad_width=pad_width, mode="symmetric")
     upad = 2 * us - ur
-
     if method == "conv":
         # Convolution weights.
         wnode = np.array([1, 2, 1]) * 0.5
@@ -1013,8 +1034,9 @@ class Problem:
             tracers = dict()
         mod = domain.mod
         if "epoch" not in tracers:
-            if mod.tf:
-                tracers["epoch"] = mod.tf.Variable(0)
+            if mod.torch:
+                tracers["epoch"] = mod.torch.tensor(0)
+                # tracers["epoch"] = mod.tf.Variable(0)
             # if mod.torch:
                 # tracers["epoch"] = 0
             else:
@@ -1032,7 +1054,7 @@ class Problem:
 
         if isinstance(mod, ModTorch):
             self._eval_loss_grad = self._eval_loss_grad_torch
-            self._eval_operator = self._eval_operator_tf
+            self._eval_operator = self._eval_operator_torch 
             self._eval_operator_grad = self._eval_operator_grad_torch
         else:
             raise NotImplementedError("Unsupported mod={:}".format(mod))
@@ -1059,12 +1081,12 @@ class Problem:
         
         def func(arrays, tracers):
              # ensure require_grad=True in array
-            arrays = [arr.detach().requires_grad_(True) for arr in arrays]
+            # arrays = [arr.detach().requires_grad_(True) for arr in arrays]
 
             # forward
             domain.arrays_to_state(arrays, cache["state"])
             ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
-            ff = self.operator(ctx)
+            ff = self.operator(ctx) ## outside definition
 
             assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
             names = [f[0] if isinstance(f, tuple) else "" for f in ff]
@@ -1072,12 +1094,18 @@ class Problem:
             assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
             values = [f[1] if isinstance(f, tuple) else f for f in ff]
             terms = [
-                mod.mean(v.value) if isinstance(v, Context.Raw) else mod.mean(mod.square(v)) for v in values
+                mod.mean(v.value) if isinstance(v, Context.Raw) else mod.mean(mod.square(v)) for v in  values
             ]
             loss = sum(terms)
             norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]
             
-            # backward 
+            # backward
+            # print("--loss: ", loss)
+            # print("--arrays: ", arrays)
+            # for i, tensor in enumerate(arrays):
+                # print(f"\nTensor {i}: requires_grad = {tensor.requires_grad}, shape = {tensor.shape} device = {tensor.device}")
+                # print("tensor: ", tensor)
+
             grads = torch.autograd.grad(loss, arrays, create_graph=False, retain_graph=False)
             grads = [g if g is not None else torch.zeros_like(u) for u, g in zip(arrays, grads)]
         
@@ -1093,7 +1121,7 @@ class Problem:
 
         # calculate losses and gradients
         arrays = domain.arrays_from_state(state)
-        loss, grads, terms, norms = cache["func"](arrays, self.trancers)
+        loss, grads, terms, norms = cache["func"](arrays, self.tracers)
         return loss, grads, terms, cache["names"], norms
 
 
@@ -1299,9 +1327,12 @@ class Problem:
         if not state.initialized:
             raise RuntimeError("Uninitialized state, use `state = domain.init_state(state)`")
         loss, grads, terms, names, norms = self._eval_loss_grad(state)
-        loss = np.array(loss)
-        terms = list(map(np.array, terms))
-        norms = list(map(np.array, norms))
+        # loss = np.array(loss)
+        loss = np.array(loss.detach().cpu())
+        terms = [term.detach().cpu().numpy() for term in terms]
+        norms = [norm.detach().cpu().numpy() for norm in norms]
+        # terms = list(map(np.array, terms))
+        # norms = list(map(np.array, norms))
         return loss, grads, terms, names, norms
 
     def _eval_operator_torch(self, state):
