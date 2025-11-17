@@ -221,6 +221,8 @@ class ModTorch(ModBase):
         self.einsum = mod.einsum
         self.array = mod.tensor
         self.matmul = mod.matmul
+        self.variable = lambda data, dtype: torch.nn.Parameter(torch.tensor(data, dtype=dtype))
+        
         # self.variable = mod.Variable
         # self.variable = lambda x: torch.nn.Parameter(torch.tensor(x)) if not isinstance(x, torch.Tensor) else torch.nn.Parameter(x)
 
@@ -230,12 +232,24 @@ class ModTorch(ModBase):
 
         ## 
         self.meshgrid = np.meshgrid
+
+        def type_convert(dtype):
+            dtype_map = {
+                np.float32: torch.float32,
+                np.float64: torch.float64,
+                np.int32: torch.int32,
+                np.int64: torch.int64,
+            }
+            return dtype_map.get(dtype, dtype)
+        
+        self.type_convert = type_convert
         
 
         def pad(array, pad_width, mode):
             """
             Enhanced version with mode mapping support
             """
+            print(array.size())
             # Mode mapping (TensorFlow -> PyTorch)
             mode_mapping = {
                 'constant': 'constant',
@@ -249,7 +263,25 @@ class ModTorch(ModBase):
             for pad_pair in pad_width_reversed:
                 torch_padding.extend(pad_pair)
             
-            return mod.nn.functional.pad(array, pad=torch_padding, mode=torch_mode)
+            # ---- handle dimensionality ----
+            # For reflect/replicate: PyTorch needs at least 3D (N,C,W)
+            need_restore = []
+            if torch_mode in ("reflect", "replicate"):
+                while array.dim() < 3:
+                    array = array.unsqueeze(0)
+                    need_restore.append(0)
+
+                if array.dim() == 3:
+                    # shape (C,H,W) → add fake batch dim
+                    array = array.unsqueeze(0)
+                    need_restore.append(0)
+                # Now array is at least 4D (N,C,H,W)
+            # ---- apply padding ----
+            out = mod.nn.functional.pad(array, pad=torch_padding, mode=torch_mode)
+            # ---- restore original dims ----
+            for _ in need_restore:
+                out = out.squeeze(0)
+            return out
 
         self.pad = pad
 
@@ -269,6 +301,7 @@ class ModTorch(ModBase):
         
 
         self.random = Namespace()
+        
         def set_seed(seed):
             torch.manual_seed(seed)
             np.random.seed(seed)
@@ -300,6 +333,25 @@ class ModTorch(ModBase):
 
             self.spnorm = modsp.linalg.norm
             self.spsolve = modsp.linalg.spsolve
+        
+
+        def array2tensor(ndarray, torch_dtype):
+            """
+            convert numpy.ndarray to torch.Tensor
+            """
+            return torch.from_numpy(ndarray).to(torch_dtype)
+
+        def tensor2array(tensor, np_dtype):
+            """
+            convert torch.Tensor to numpy.ndarray
+            """
+            return tensor.detach().cpu().numpy().astype(np_dtype)
+
+        self.array2tensor = array2tensor
+        self.tensor2array = tensor2array
+
+
+
 
 
         
