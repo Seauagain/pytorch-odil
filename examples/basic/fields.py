@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
-
 import matplotlib.pyplot as plt
 import numpy as np
+import torch 
 
 import odil
 from odil import plotutil, printlog
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--plot", type=int, default=1, help="Plot fields")
     odil.util.add_arguments(parser)
     odil.linsolver.add_arguments(parser)
-    parser.set_defaults(outdir="out_fields")
+    parser.set_defaults(outdir="out_fields_torch")
     parser.set_defaults(echo=1)
     parser.set_defaults(frames=1, plot_every=100, report_every=50, history_every=10)
     parser.set_defaults(optimizer="adam", lr=1e-2)
@@ -65,26 +65,27 @@ def plot(problem, state, epoch, frame, cbinfo=None):
     # Cells.
     xc, yc = domain.points(loc="cc")
     uc = domain.field(state, "uc")
-    ax.scatter(xc, yc, s=10, c=uc, edgecolor="C0", label="uc", **kw)
+    
+    ax.scatter(xc.detach().cpu().numpy(), yc.detach().cpu().numpy(), s=10, c=uc.detach().cpu().numpy(), edgecolor="C0", label="uc", **kw)
 
     # Nodes.
     xn, yn = domain.points(loc="nn")
     un = domain.field(state, "un")
-    ax.scatter(xn, yn, s=10, c=un, edgecolor="C1", label="un", **kw)
+    ax.scatter(xn.detach().cpu().numpy(), yn.detach().cpu().numpy(), s=10, c=un.detach().cpu().numpy(), edgecolor="C1", label="un", **kw)
 
     # Faces in x.
     xfx, yfx = domain.points(loc="nc")
     ufx = domain.field(state, "ufx")
-    ax.scatter(xfx, yfx, s=10, c=ufx, edgecolor="C2", label="ufx", **kw)
+    ax.scatter(xfx.detach().cpu().numpy(), yfx.detach().cpu().numpy(), s=10, c=ufx.detach().cpu().numpy(), edgecolor="C2", label="ufx", **kw)
 
     # Faces in y.
     xfy, yfy = domain.points(loc="cn")
     ufy = domain.field(state, "ufy")
-    ax.scatter(xfy, yfy, s=10, c=ufy, edgecolor="C3", label="ufy", **kw)
+    ax.scatter(xfy.detach().cpu().numpy(), yfy.detach().cpu().numpy(), s=10, c=ufy.detach().cpu().numpy(), edgecolor="C3", label="ufy", **kw)
 
     ax.legend(loc="lower left", bbox_to_anchor=(0.1, 1), ncol=4, handletextpad=0)
 
-    ax.pcolormesh(xn, yn, uc, edgecolor="k", shading="flat", zorder=0, **dict(kw, lw=0.5))
+    ax.pcolormesh(xn.detach().cpu().numpy(), yn.detach().cpu().numpy(), uc.detach().cpu().numpy(), edgecolor="k", shading="flat", zorder=0, **dict(kw, lw=0.5))
 
     ax.set_aspect("equal")
     ax.set_axis_off()
@@ -93,7 +94,8 @@ def plot(problem, state, epoch, frame, cbinfo=None):
 
 
 def make_problem(args):
-    dtype = np.float64 if args.double else np.float32
+    dtype = torch.float64 if args.double else torch.float32
+    # dtype = np.float64 if args.double else np.float32
     domain = odil.Domain(
         cshape=(args.Nx, args.Ny),
         dimnames=["x", "y"],
@@ -112,10 +114,10 @@ def make_problem(args):
 
     state = odil.State(
         fields={
-            "uc": Field(np.zeros(domain.size(loc="cc")), loc="cc"),
-            "un": Field(np.zeros(domain.size(loc="nn")), loc="nn"),
-            "ufx": Field(np.zeros(domain.size(loc="nc")), loc="nc"),
-            "ufy": Field(np.zeros(domain.size(loc="cn")), loc="cn"),
+            "uc": Field(torch.zeros(domain.size(loc="cc")), loc="cc"),
+            "un": Field(torch.zeros(domain.size(loc="nn")), loc="nn"),
+            "ufx": Field(torch.zeros(domain.size(loc="nc")), loc="nc"),
+            "ufy": Field(torch.zeros(domain.size(loc="cn")), loc="cn"),
             # "net": domain.make_neural_net([2, 4, 2]),
         }
     )
@@ -127,7 +129,7 @@ def make_problem(args):
 def main():
     args = parse_args()
     odil.setup_outdir(args)
-    args.epochs = 100
+    args.epochs = 300
     problem, state = make_problem(args)
     callback = odil.make_callback(problem, args, plot_func=plot if args.plot else None)
     odil.util.optimize_grad(args, args.optimizer, problem, state, callback)
