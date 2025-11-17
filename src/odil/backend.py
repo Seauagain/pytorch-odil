@@ -187,7 +187,7 @@ class ModTorch(ModBase):
     def __init__(self, mod=None, modsp=None):
         super().__init__(mod)
         self.batch_to_space = None 
-        self.cast = lambda x, dtype: x.to(dtype=dtype)  # data type convertion
+        self.cast = lambda x, dtype: torch.tensor(x, dtype=dtype) # data type convertion
         self.numpy = lambda x: x.numpy()
         self.native = lambda x: x
         self.spnative = lambda x: x.numpy() if hasattr(x, "numpy") else x
@@ -233,11 +233,11 @@ class ModTorch(ModBase):
 
         ## fix the torch.roll cannot receive range
         def roll(inputs, shift, axis):
-            return torch.roll(inputs, shift, tuple(axis))
+            return torch.roll(inputs, tuple(shift), tuple(axis))
         self.roll = roll
 
         ## 
-        self.meshgrid = np.meshgrid
+        # self.meshgrid = np.meshgrid
 
         def type_convert(dtype):
             dtype_map = {
@@ -255,7 +255,7 @@ class ModTorch(ModBase):
             """
             Enhanced version with mode mapping support
             """
-            print(array.size())
+            # print(array.size())
             # Mode mapping (TensorFlow -> PyTorch)
             mode_mapping = {
                 'constant': 'constant',

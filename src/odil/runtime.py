@@ -1,32 +1,31 @@
 import os
 import sys
 
-import numpy
+import numpy as np
 
 # from .backend import ModNumpy, ModTensorflow
 from .backend import ModTorch
 
 if not int(os.environ.get("ODIL_MT", 0)):
     os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false " "intra_op_parallelism_threads=1"
-    os.environ["TENSORFLOW_INTER_OP_PARALLELISM"] = "1"
-    os.environ["TENSORFLOW_INTRA_OP_PARALLELISM"] = "1"
+    # os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false " "intra_op_parallelism_threads=1"
+    # os.environ["TENSORFLOW_INTER_OP_PARALLELISM"] = "1"
+    # os.environ["TENSORFLOW_INTRA_OP_PARALLELISM"] = "1"
 
 enable_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "") not in ["", "-1"]
+
 if not enable_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 if not int(os.environ.get("ODIL_WARN", 0)):
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+    # os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
     import warnings
-
     warnings.simplefilter(action="ignore", category=FutureWarning)
     warnings.simplefilter(action="ignore", category=Warning)
 
 enable_jit = bool(int(os.environ.get("ODIL_JIT", 0)))
 
 backend_name = os.environ.get("ODIL_BACKEND", "")
-
 
 if not backend_name:
     try:
@@ -35,6 +34,47 @@ if not backend_name:
     except ImportError:
         print("Import Torch error in the runtime.py")
         pass
+
+
+if backend_name == "torch":
+    import torch 
+    # GPU 内存配置
+    if not enable_gpu:
+        # 强制使用 CPU
+        torch.cuda.is_available = lambda: False
+        device = "cpu"
+
+    else:
+        if torch.cuda.is_available():
+            # 设置 GPU 内存增长（PyTorch 默认就是按需分配，但可以显式设置）
+            torch.cuda.empty_cache()
+            device = "cuda:0"
+            torch.cuda.set_device(device)
+            # 更精细的内存配置（可选）
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+    # 初始化模块（根据你的实际需求实现 ModTorch）
+    mod = ModTorch(torch)
+    tf = None
+    jax = None
+
+else:
+    sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: torch\n")
+    exit(1)
+
+# Default data type.
+dtype_name = os.environ.get("ODIL_DTYPE", "float32")
+if dtype_name in ["float32", "float64"]:
+    # dtype = numpy.dtype(dtype_name)
+    dtype = getattr(torch, dtype_name)
+    # dtype = getattr(np, dtype_name)
+else:
+    sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
+    exit(1)
+
+
+
+
 
 # if not backend_name:
 #     try:
@@ -54,31 +94,7 @@ if not backend_name:
 #         exit(1)
 
 
-if backend_name == "torch":
-    import torch 
-    
-    # GPU 内存配置
-    if not enable_gpu:
-        # 强制使用 CPU
-        torch.cuda.is_available = lambda: False
 
-    else:
-        if torch.cuda.is_available():
-            # 设置 GPU 内存增长（PyTorch 默认就是按需分配，但可以显式设置）
-            torch.cuda.empty_cache()
-            # 设置当前设备（通常使用第0张GPU）
-            torch.cuda.set_device("cuda:0")
-            # 更精细的内存配置（可选）
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-    # 初始化模块（根据你的实际需求实现 ModTorch）
-    mod = ModTorch(torch)
-    tf = None
-    jax = None
-
-else:
-    sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: torch\n")
-    exit(1)
 
 # if backend_name == "tf":
 #     import tensorflow as tf
@@ -112,11 +128,4 @@ else:
 #     sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: tf, jax\n")
 #     exit(1)
 
-# Default data type.
-dtype_name = os.environ.get("ODIL_DTYPE", "float32")
-if dtype_name in ["float32", "float64"]:
-    dtype = numpy.dtype(dtype_name)
-else:
-    sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
-    exit(1)
 
