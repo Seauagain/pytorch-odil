@@ -2,6 +2,7 @@ from argparse import Namespace
 
 import numpy as np
 
+import torch 
 
 class Optimizer:
 
@@ -308,8 +309,8 @@ class AdamNativeOptimizer(Optimizer):
         beta_1 = mod.cast(beta_1, dtype)
         beta_2 = mod.cast(beta_2, dtype)
 
-        def _step(x, m, v, grads, local_epoch):
-            local_epoch = mod.cast(local_epoch, dtype)
+        def _step(x, m, v, grads, local_epoch, beta_1, beta_2, dtype):
+            local_epoch = torch.tensor(local_epoch, dtype=dtype)
             beta_1_power = beta_1**local_epoch
             beta_2_power = beta_2**local_epoch
             alpha = lr * mod.sqrt(1 - beta_2_power) / (1 - beta_1_power)
@@ -319,11 +320,13 @@ class AdamNativeOptimizer(Optimizer):
             return x, m, v
 
         step = _step
-        if jit:
-            if mod.jax:
-                step = mod.jax.jit(_step)
-            elif mod.tf:
-                step = mod.tf.function(_step, jit_compile=True)
+        # if jit:
+
+        # step = torch.jit.script(_step) if jit else  _step
+        # if mod.jax:
+        #     step = mod.jax.jit(_step)
+        # elif mod.tf:
+        #     step = mod.tf.function(_step, jit_compile=True)
 
         x = [mod.copy(e) for e in x0]
         m = [mod.zeros_like(e) for e in x0]
@@ -331,7 +334,7 @@ class AdamNativeOptimizer(Optimizer):
         for epoch in range(epoch_start + 1, epoch_start + epochs + 1):
             self.evals += 1
             loss, grads, pinfo = loss_grad(x)
-            x, m, v = step(x, m, v, grads, mod.constant(epoch - epoch_start))
+            x, m, v = step(x, m, v, grads, mod.constant(epoch - epoch_start), beta_1, beta_2, dtype)
             if epoch > 0 and callback is not None:
                 callback(x, epoch, pinfo)
 
