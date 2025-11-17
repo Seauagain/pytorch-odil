@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--plot", type=int, default=1, help="Plot fields")
     odil.util.add_arguments(parser)
     odil.linsolver.add_arguments(parser)
-    parser.set_defaults(outdir="out_fields")
+    parser.set_defaults(outdir="out_fields_tf")
     parser.set_defaults(echo=1)
     parser.set_defaults(frames=1, plot_every=100, report_every=50, history_every=10)
     parser.set_defaults(optimizer="adam", lr=1e-2)
@@ -127,10 +127,15 @@ def make_problem(args):
 def main():
     args = parse_args()
     odil.setup_outdir(args)
-    args.epochs = 100
+    args.epochs = 300
     problem, state = make_problem(args)
     callback = odil.make_callback(problem, args, plot_func=plot if args.plot else None)
+
+    import time
+    t1 = time.time()
     odil.util.optimize_grad(args, args.optimizer, problem, state, callback)
+    t2 = time.time()
+    print(f"time cost = {t2-t1:.2f} s")
 
 
 if __name__ == "__main__":
