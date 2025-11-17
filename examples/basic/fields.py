@@ -132,7 +132,12 @@ def main():
     args.epochs = 300
     problem, state = make_problem(args)
     callback = odil.make_callback(problem, args, plot_func=plot if args.plot else None)
+
+    import time
+    t1 = time.time()
     odil.util.optimize_grad(args, args.optimizer, problem, state, callback)
+    t2 = time.time()
+    print(f"time cost = {t2-t1:.2f} s")
 
 
 if __name__ == "__main__":
