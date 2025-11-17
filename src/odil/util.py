@@ -370,10 +370,11 @@ def make_callback(
         tracers = problem.tracers
         if isinstance(tracers, dict):
             # FIXME: Revise without check for TF.
-            if mod.tf and "epoch" in problem.tracers:
+            if mod.torch and "epoch" in problem.tracers:
                 # Need tf.Variable to avoid retracing.
-                assert isinstance(tracers["epoch"], mod.tf.Variable)
-                problem.tracers["epoch"].assign(epoch)
+                assert isinstance(tracers["epoch"], mod.torch.Tensor)
+                # problem.tracers["epoch"].assign(epoch)
+                problem.tracers["epoch"].fill_(epoch)
             else:
                 problem.tracers["epoch"] = epoch
         if epoch_func is not None:
