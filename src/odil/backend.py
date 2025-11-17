@@ -226,9 +226,15 @@ class ModTorch(ModBase):
         # self.variable = mod.Variable
         # self.variable = lambda x: torch.nn.Parameter(torch.tensor(x)) if not isinstance(x, torch.Tensor) else torch.nn.Parameter(x)
 
-        self.torch = mod
+        self.torch = torch 
         self.stop_gradient = lambda x: x.detach()
         # self.broadcast_to = mod.broadcast_to
+
+
+        ## fix the torch.roll cannot receive range
+        def roll(inputs, shift, axis):
+            return torch.roll(inputs, shift, tuple(axis))
+        self.roll = roll
 
         ## 
         self.meshgrid = np.meshgrid
