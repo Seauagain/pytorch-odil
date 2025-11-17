@@ -36,31 +36,30 @@ if not backend_name:
         pass
 
 
-if backend_name == "torch":
-    import torch 
-    # GPU 内存配置
-    if not enable_gpu:
-        # 强制使用 CPU
-        torch.cuda.is_available = lambda: False
+device = "cpu"
+
+if torch.cuda.is_available():
+    device = "cuda:0"
+    torch.cuda.empty_cache()
+    torch.cuda.set_device(device)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+else:
+    try:
+        import torch_npu
+        if torch_npu.npu.is_available():
+            device = "npu:0"
+            torch.npu.empty_cache()
+            torch.npu.set_device(device)
+        else:
+            device = "cpu"
+    except ImportError:
         device = "cpu"
 
-    else:
-        if torch.cuda.is_available():
-            # 设置 GPU 内存增长（PyTorch 默认就是按需分配，但可以显式设置）
-            torch.cuda.empty_cache()
-            device = "cuda:0"
-            torch.cuda.set_device(device)
-            # 更精细的内存配置（可选）
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-    # 初始化模块（根据你的实际需求实现 ModTorch）
-    mod = ModTorch(torch)
-    tf = None
-    jax = None
+mod = ModTorch(torch)
+tf = None
+jax = None
 
-else:
-    sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: torch\n")
-    exit(1)
 
 # Default data type.
 dtype_name = os.environ.get("ODIL_DTYPE", "float32")
@@ -74,7 +73,12 @@ else:
 
 
 
-
+cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "Not set")
+width = 50
+print("=" * width)
+print(f"Available device: {device}".center(width))
+print(f"CUDA_VISIBLE_DEVICES: {cuda_visible}".center(width))
+print("=" * width)
 
 # if not backend_name:
 #     try:
