@@ -251,43 +251,147 @@ class ModTorch(ModBase):
         self.type_convert = type_convert
         
 
+
+        def tf_reflect_pad(x, pad_width):
+            """
+            Match TensorFlow's reflect mode exactly.
+            TF reflect means:
+                - mirror WITHOUT including the edge value
+                - e.g. [1,2,3] → reflect left 1 → [2,1,2,3]
+            """
+            out = x
+            for dim, (pad_left, pad_right) in enumerate(pad_width):
+                # pad left
+                if pad_left > 0:
+                    idx_left = torch.arange(pad_left, 0, -1, device=out.device)
+                    left_patch = torch.index_select(out, dim, idx_left)
+                else:
+                    left_patch = []
+
+                # pad right
+                if pad_right > 0:
+                    idx_right = torch.arange(out.size(dim)-2, out.size(dim)-2-pad_right, -1, device=out.device)
+                    right_patch = torch.index_select(out, dim, idx_right)
+                else:
+                    right_patch = []
+
+                parts = []
+                if pad_left > 0:
+                    parts.append(left_patch)
+                parts.append(out)
+                if pad_right > 0:
+                    parts.append(right_patch)
+
+                out = torch.cat(parts, dim=dim)
+
+            return out
+
+        def tf_symmetric_pad(x, pad_width):
+            """
+            TensorFlow 'symmetric' padding implemented manually.
+            TF symmetric includes the edge value, equal to torch 'replicate'.
+            """
+            out = x
+            for dim, (pad_left, pad_right) in enumerate(pad_width):
+
+                # left pad
+                if pad_left > 0:
+                    idx_left = torch.zeros(pad_left, device=out.device, dtype=torch.long)
+                    # all indices = 0
+                    left_patch = torch.index_select(out, dim, idx_left)
+                else:
+                    left_patch = None
+
+                # right pad
+                if pad_right > 0:
+                    idx_right = torch.full((pad_right,), out.size(dim)-1,
+                                        device=out.device, dtype=torch.long)
+                    right_patch = torch.index_select(out, dim, idx_right)
+                else:
+                    right_patch = None
+
+                parts = []
+                if left_patch is not None:
+                    parts.append(left_patch)
+                parts.append(out)
+                if right_patch is not None:
+                    parts.append(right_patch)
+
+                out = torch.cat(parts, dim=dim)
+
+            return out
+
         def pad(array, pad_width, mode):
             """
-            Enhanced version with mode mapping support
-            """
-            # print(array.size())
-            # Mode mapping (TensorFlow -> PyTorch)
-            mode_mapping = {
-                'constant': 'constant',
-                'reflect': 'reflect', 
-                'symmetric': 'replicate',  # TensorFlow's symmetric ≈ PyTorch's replicate
-            }
-            torch_mode = mode_mapping.get(mode, mode)
-            # Convert padding format
-            pad_width_reversed = list(reversed(pad_width))
-            torch_padding = []
-            for pad_pair in pad_width_reversed:
-                torch_padding.extend(pad_pair)
-            
-            # ---- handle dimensionality ----
-            # For reflect/replicate: PyTorch needs at least 3D (N,C,W)
-            need_restore = []
-            if torch_mode in ("reflect", "replicate"):
-                while array.dim() < 3:
-                    array = array.unsqueeze(0)
-                    need_restore.append(0)
+            PyTorch version of TF's tf.pad, supporting:
+            - mode="constant"
+            - mode="symmetric" → torch "replicate"
+            - mode="reflect"   → custom reflect to match TF
 
-                if array.dim() == 3:
-                    # shape (C,H,W) → add fake batch dim
-                    array = array.unsqueeze(0)
-                    need_restore.append(0)
-                # Now array is at least 4D (N,C,H,W)
-            # ---- apply padding ----
-            out = mod.nn.functional.pad(array, pad=torch_padding, mode=torch_mode)
-            # ---- restore original dims ----
-            for _ in need_restore:
-                out = out.squeeze(0)
-            return out
+            pad_width: list of (before, after) for each dimension
+            """
+            # Convert pad_width from [[b1,a1],[b2,a2],...] to PyTorch format: (aN,bN,...,a1,b1)
+            pads = []
+            for (before, after) in reversed(pad_width):
+                pads.extend([before, after])
+            pads = tuple(pads)
+
+            if mode == "constant":
+                return mod.nn.functional.pad(array, pads, mode="constant", value=0.0)
+
+            if mode == "symmetric":
+                # TF symmetric = PyTorch replicate
+                # return mod.nn.functional.pad(array, pads, mode="replicate")
+                return tf_symmetric_pad(array, pad_width)  
+
+            if mode == "reflect":
+                # Torch reflect ≠ TF reflect → must implement TF reflect manually
+                return tf_reflect_pad(array, pad_width)
+
+            raise ValueError(f"Unsupported mode {mode}")
+
+        
+
+        # def pad(array, pad_width, mode):
+        #     """
+        #     Enhanced version with mode mapping support
+        #     """
+        #     print("padding: ", array.size())
+        #     print("padding: ", pad_width)
+        #     # Mode mapping (TensorFlow -> PyTorch)
+        #     mode_mapping = {
+        #         'constant': 'constant',
+        #         'reflect': 'reflect', 
+        #         'symmetric': 'replicate',  # TensorFlow's symmetric ≈ PyTorch's replicate
+        #     }
+        #     torch_mode = mode_mapping.get(mode, mode)
+        #     # Convert padding format
+        #     pad_width_reversed = list(reversed(pad_width))
+        #     torch_padding = []
+        #     for pad_pair in pad_width_reversed:
+        #         torch_padding.extend(pad_pair)
+            
+
+        #     print("torch_padding: ", torch_padding)
+        #     # ---- handle dimensionality ----
+        #     # For reflect/replicate: PyTorch needs at least 3D (N,C,W)
+        #     need_restore = []
+        #     if torch_mode in ("reflect", "replicate"):
+        #         while array.dim() < 3:
+        #             array = array.unsqueeze(0)
+        #             need_restore.append(0)
+
+        #         if array.dim() == 3:
+        #             # shape (C,H,W) → add fake batch dim
+        #             array = array.unsqueeze(0)
+        #             need_restore.append(0)
+        #         # Now array is at least 4D (N,C,H,W)
+        #     # ---- apply padding ----
+        #     out = mod.nn.functional.pad(array, pad=torch_padding, mode=torch_mode)
+        #     # ---- restore original dims ----
+        #     for _ in need_restore:
+        #         out = out.squeeze(0)
+        #     return out
 
         self.pad = pad
 
