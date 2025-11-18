@@ -4,26 +4,36 @@ import argparse
 import pickle
 
 import numpy as np
-
+import torch 
 import odil
 from odil import printlog
-from odil.runtime import tf
+# from odil.runtime import tf
 
 
 def get_exact(args, t, x):
-    t = tf.Variable(t)
-    x = tf.Variable(x)
-    u = tf.zeros_like(x)
-    with tf.GradientTape() as tape:
-        ii = [1, 2, 3, 4, 5]
-        for i in ii:
-            k = i * np.pi
-            u += tf.cos((x - t + 0.5) * k)
-            u += tf.cos((x + t - 0.5) * k)
-        u /= 2 * len(ii)
-    ut = tape.gradient(u, t).numpy()
-    u = u.numpy()
+    t = torch.tensor(t, requires_grad=True)
+    x = torch.tensor(x, requires_grad=True)
+    u = torch.zeros_like(x)
+    
+    ii = [1, 2, 3, 4, 5]
+    for i in ii:
+        k = i * np.pi
+        u = u + torch.cos((x - t + 0.5) * k)
+        u = u + torch.cos((x + t - 0.5) * k)
+    u = u / (2 * len(ii))
+    
+    # 计算u对t的梯度
+    ut = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), 
+                            create_graph=False, retain_graph=False)[0]
+    
+
+    # u = u.detach().cpu().numpy()
+    # ut = ut.detach().cpu().numpy()
+    u = u.detach()
+    ut = ut.detach()
+    
     return u, ut
+
 
 
 def operator_wave(ctx):
@@ -45,8 +55,8 @@ def operator_wave(ctx):
         ]
         return st
 
-    left_utm = mod.roll(extra.left_u, 1, axis=0)
-    right_utm = mod.roll(extra.right_u, 1, axis=0)
+    left_utm = mod.roll(extra.left_u, (1,), (0,))
+    right_utm = mod.roll(extra.right_u, (1,), (0,))
 
     def apply_bc_u(st):
         extrap = odil.core.extrap_quadh
@@ -80,8 +90,8 @@ def get_uut(domain, init_u, uu):
 
     dt = domain.step("t")
     u = uu
-    utm = np.roll(u, 1, axis=0)
-    utp = np.roll(u, -1, axis=0)
+    utm = torch.roll(u, (1,), (0,) )
+    utp = torch.roll(u, (-1,), (0,) )
     utm[0, :] = extrap_quadh(utp[0, :], u[0, :], init_u)
     utp[-1, :] = extrap_quad(u[-3, :], u[-2, :], u[-1, :])
     uut = (utp - utm) / (2 * dt)
@@ -122,7 +132,8 @@ def plot_func(problem, state, epoch, frame, cbinfo=None):
 
     ref_u, ref_ut = extra.ref_u, extra.ref_ut
 
-    state_u = np.array(domain.field(state, "u"))
+    # state_u = np.array( domain.field(state, "u"))
+    state_u = domain.field(state, "u")
     state_ut = get_uut(domain, extra.init_u, state_u)
 
     if args.dump_data:
@@ -139,11 +150,11 @@ def plot_func(problem, state, epoch, frame, cbinfo=None):
         with open(path, "wb") as f:
             pickle.dump(d, f)
 
-    umax = max(abs(np.max(ref_u)), abs(np.min(ref_u)))
+    umax = max(abs(np.max( ref_u.detach().cpu().numpy() )), abs(np.min( ref_u.detach().cpu().numpy() ))) # .detach().cpu().numpy()
     plot_1d(
         domain,
-        extra.ref_u,
-        state_u,
+        extra.ref_u.detach().cpu().numpy(),
+        state_u.detach().cpu().numpy(),
         path=path0,
         title=title0,
         cmap="RdBu_r",
@@ -153,11 +164,11 @@ def plot_func(problem, state, epoch, frame, cbinfo=None):
         umax=umax,
     )
 
-    umax = max(abs(np.max(ref_ut)), abs(np.min(ref_ut)))
+    umax = max(abs(np.max(ref_ut.detach().cpu().numpy())), abs(np.min(ref_ut.detach().cpu().numpy())))
     plot_1d(
         domain,
-        ref_ut,
-        state_ut,
+        ref_ut.detach().cpu().numpy(),
+        state_ut.detach().cpu().numpy(),
         path=path1,
         title=title1,
         cmap="RdBu_r",
@@ -172,7 +183,7 @@ def get_error(domain, extra, state, key):
     if key == "u":
         state_u = domain.field(state, key)
         ref_u = extra.ref_u
-        return np.sqrt(np.mean((state_u - ref_u) ** 2))
+        return torch.sqrt(torch.mean((state_u - ref_u) ** 2))
     return None
 
 
@@ -197,7 +208,8 @@ def report_func(problem, state, epoch, cbinfo):
 
 
 def make_problem(args):
-    dtype = np.float64 if args.double else np.float32
+    # dtype = np.float64 if args.double else np.float32
+    dtype = torch.float32
     domain = odil.Domain(
         cshape=(args.Nt, args.Nx),
         dimnames=("t", "x"),
@@ -226,7 +238,8 @@ def make_problem(args):
     add_extra(locals(), "args", "ref_u", "ref_ut", "left_u", "right_u", "init_u", "init_ut")
 
     state = odil.State()
-    state.fields["u"] = np.zeros(domain.cshape)
+    # state.fields["u"] = np.zeros(domain.cshape)
+    state.fields["u"] = torch.zeros(domain.cshape)
     state = domain.init_state(state)
     problem = odil.Problem(operator_wave, domain, extra)
     return problem, state

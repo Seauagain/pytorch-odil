@@ -9,7 +9,7 @@
 ## L-BFGS with multigrid
 
 ```
-./wave.py --optimizer lbfgsb --multigrid 1 --kimp 100 --every_factor 2
+./wave.py --optimizer adam--multigrid 1 --kimp 100 --every_factor 2
 ```
 
 Output directory `out_wave`
