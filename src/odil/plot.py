@@ -41,7 +41,8 @@ def plot_1d(
     fig.subplots_adjust(hspace=0, wspace=0)
     spec = fig.add_gridspec(2 * nslices, 3)
     xx, yy = domain.points_1d(ix, iy)
-    xx, yy = np.array(xx), np.array(yy)
+    # xx, yy = np.array(xx), np.array(yy)
+    xx, yy = xx.detach().cpu().numpy(), yy.detach().cpu().numpy()
     xlim = (domain.lower[ix], domain.upper[ix])
     ylim = (domain.lower[iy], domain.upper[iy])
     if umin is None:

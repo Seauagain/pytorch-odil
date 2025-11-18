@@ -52,11 +52,11 @@ class Domain:
         self.dimnames = dimnames
 
         from . import runtime
-        self.device = runtime.device
+        self.device = runtime.DEVICE
 
         if dtype is None:
             from . import runtime
-            dtype = runtime.dtype
+            dtype = runtime.DTYPE
         self.dtype = dtype
         self.mod = mod
         # dtype = np.float32
@@ -1735,7 +1735,8 @@ class Approx:
 
 def struct_to_numpy(mod, d):
     if mod.is_tensor(d):
-        return np.array(d)
+        # return np.array(d)
+        return mod.tensor2array(d, np.float32)
     if isinstance(d, dict):
         for key in d:
             d[key] = struct_to_numpy(mod, d[key])
