@@ -2,8 +2,7 @@ import os
 import sys
 
 import numpy as np
-
-# from .backend import ModNumpy, ModTensorflow
+import torch
 from .backend import ModTorch
 
 if not int(os.environ.get("ODIL_MT", 0)):
@@ -27,34 +26,28 @@ enable_jit = bool(int(os.environ.get("ODIL_JIT", 0)))
 
 backend_name = os.environ.get("ODIL_BACKEND", "")
 
-if not backend_name:
-    try:
-        import torch
-        backend_name = "torch"
-    except ImportError:
-        print("Import Torch error in the runtime.py")
-        pass
 
+backend_name = "torch"
 
-device = "cpu"
+DEVICE = "cpu"
 
 if torch.cuda.is_available():
-    device = "cuda:0"
+    DEVICE = "cuda:0"
     torch.cuda.empty_cache()
-    torch.cuda.set_device(device)
+    torch.cuda.set_device(DEVICE)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 else:
     try:
         import torch_npu
         if torch_npu.npu.is_available():
-            device = "npu:0"
+            DEVICE = "npu:0"
             torch.npu.empty_cache()
-            torch.npu.set_device(device)
+            torch.npu.set_device(DEVICE)
         else:
-            device = "cpu"
+            DEVICE = "cpu"
     except ImportError:
-        device = "cpu"
+        DEVICE = "cpu"
 
 mod = ModTorch(torch)
 tf = None
@@ -63,9 +56,10 @@ jax = None
 
 # Default data type.
 dtype_name = os.environ.get("ODIL_DTYPE", "float32")
+
 if dtype_name in ["float32", "float64"]:
     # dtype = numpy.dtype(dtype_name)
-    dtype = getattr(torch, dtype_name)
+    DTYPE = getattr(torch, dtype_name)
     # dtype = getattr(np, dtype_name)
 else:
     sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
@@ -76,9 +70,13 @@ else:
 cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "Not set")
 width = 50
 print("=" * width)
-print(f"Available device: {device}".center(width))
+print(f"Available device: {DEVICE}".center(width))
 print(f"CUDA_VISIBLE_DEVICES: {cuda_visible}".center(width))
 print("=" * width)
+
+
+
+
 
 # if not backend_name:
 #     try:
