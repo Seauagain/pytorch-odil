@@ -25,9 +25,10 @@ class History:
 
     @staticmethod
     def _none_like(value: Value) -> Value:
+        import torch 
         if value is None:
             return None
-        elif isinstance(value, (float, np.float32, np.float64)):
+        elif isinstance(value, (float, torch.Tensor, np.float32, np.float64)):
             return 0.0
         elif isinstance(value, int):
             return 0
@@ -35,15 +36,16 @@ class History:
             raise ValueError("Unknown type: " + str(type(value)))
 
     def append(self, key: str, value: Union[Value, None] = None) -> None:
+        import torch 
         assert value is None or isinstance(
             value,
-            (
-                int,
+            (   int,
                 float,
                 str,
                 np.float32,
                 np.float64,
                 np.ndarray,
+                torch.Tensor
             ),
         ), "Unexpected type: " + str(type(value))
         if isinstance(value, np.ndarray):
