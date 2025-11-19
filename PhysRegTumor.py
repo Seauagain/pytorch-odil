@@ -1742,10 +1742,10 @@ def particles_to_field_3d_average(up, tx, ty, tz, domain): ## torch version
     flat_indices = ix * ny * nz + iy * nz + iz
 
     # Initialize flattened output grids
-    # u_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=up.device)
-    # counts_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=up.device)
-    u_flat = CSHAPE_SIZE_ZEROS.clone()      # 多尺度网格？
-    counts_flat = CSHAPE_SIZE_ZEROS.clone()
+    u_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=up.device)
+    counts_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=up.device)
+    # u_flat = CSHAPE_SIZE_ZEROS.clone()      # 多尺度网格？
+    # counts_flat = CSHAPE_SIZE_ZEROS.clone()
 
     # Create a tensor of ones for counting
     ones = torch.ones_like(up)
@@ -2859,7 +2859,7 @@ def make_problem(args):
     ## 初始化全局变量 避免重复初始化 加速self.operator(ctx)运算
     global GLOBAL_M_TILDAS, CSHAPE_SIZE_ZEROS, TENSOR_ONE, MASK1_MASK3
     GLOBAL_M_TILDAS = m_Tildas(wm_data, gm_data, matter_th) 
-    CSHAPE_SIZE_ZEROS = torch.zeros(args.Nx * args.Ny * args.Nz, dtype=DTYPE, device=DEVICE)
+    # CSHAPE_SIZE_ZEROS = torch.zeros(args.Nx * args.Ny * args.Nz, dtype=DTYPE, device=DEVICE)
     TENSOR_ONE = torch.tensor(1.0, dtype=DTYPE, device=DEVICE)
     MASK1_MASK3 = (segm_data == 1) | (segm_data == 3)
     ####################################################################################
@@ -2946,11 +2946,11 @@ def main():
 
     args = parse_args()
     
-    args.epochs = 30
-    args.plot_every=30
-    args.report_every=5
-    args.history_every=30
-    args.output_dir = "FK_001-mx-test-timecost"
+    # args.epochs = 30
+    # args.plot_every=30
+    # args.report_every=5
+    # args.history_every=30
+    args.output_dir = "FK_001-mx-epoch25000"
 
     default_outdir = args.output_dir
     setattr(args, 'outdir', default_outdir)   
