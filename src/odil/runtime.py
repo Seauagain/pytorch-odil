@@ -7,13 +7,8 @@ from .backend import ModTorch
 
 if not int(os.environ.get("ODIL_MT", 0)):
     os.environ["OMP_NUM_THREADS"] = "1"
-    # os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false " "intra_op_parallelism_threads=1"
-    # os.environ["TENSORFLOW_INTER_OP_PARALLELISM"] = "1"
-    # os.environ["TENSORFLOW_INTRA_OP_PARALLELISM"] = "1"
 
-cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-enable_gpu = cuda_visible not in ["", "-1"]
-gpu_ids = [id.strip() for id in cuda_visible.split(",") if id.strip()]
+enable_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "") not in ["", "-1"]
 
 if not enable_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -34,7 +29,7 @@ backend_name = "torch"
 DEVICE = "cpu"
 
 if torch.cuda.is_available():
-    DEVICE = f"cuda:{gpu_ids[0]}"
+    DEVICE = "cuda:0"
     torch.cuda.empty_cache()
     torch.cuda.set_device(DEVICE)
     torch.backends.cudnn.deterministic = True
@@ -43,7 +38,7 @@ else:
     try:
         import torch_npu
         if torch_npu.npu.is_available():
-            DEVICE = f"npu:{gpu_ids[0]}"
+            DEVICE = "npu:0"
             torch.npu.empty_cache()
             torch.npu.set_device(DEVICE)
         else:
@@ -62,13 +57,6 @@ dtype_name = os.environ.get("ODIL_DTYPE", "float32")
 if dtype_name in ["float32", "float64"]:
     # dtype = numpy.dtype(dtype_name)
     DTYPE = getattr(torch, dtype_name)
-    # dtype = getattr(np, dtype_name)
-    # WNODE_TENSOR = 0.25 * torch.tensor([1,2,1], dtype=DTYPE, device=DEVICE)
-    # WCELL_TENSOR = 0.5 * torch.tensor([1, 1], dtype=DTYPE, device=DEVICE)
-    # WNONE_TENSOR = torch.tensor([1.0], dtype=DTYPE, device=DEVICE)
-    # ZERO_GRID = torch.tensor([0], dtype=torch.int, device=DEVICE)
-    # ONE_GRID = torch.tensor([0, 1], dtype=torch.int, device=DEVICE)
-    ## core.py needs it.
 else:
     sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
     exit(1)
@@ -85,57 +73,5 @@ print("=" * width)
 
 
 
-
-# if not backend_name:
-#     try:
-#         import tensorflow as tf
-
-#         backend_name = "tf"
-#     except ImportError:
-#         pass
-
-# if not backend_name:
-#     try:
-#         import jax
-
-#         backend_name = "jax"
-#     except ImportError:
-#         sys.stderr.write("Cannot select a default backend. Tried: tensorflow, jax\n")
-#         exit(1)
-
-
-
-
-# if backend_name == "tf":
-#     import tensorflow as tf
-
-#     tf.config.threading.set_inter_op_parallelism_threads(1)
-#     tf.config.threading.set_intra_op_parallelism_threads(1)
-#     _gpus = tf.config.list_physical_devices("GPU")
-#     if _gpus:
-#         try:
-#             for gpu in _gpus:
-#                 tf.config.experimental.set_memory_growth(gpu, True)
-#             logical_gpus = tf.config.list_logical_devices("GPU")
-#         except RuntimeError as e:
-#             print(e)
-
-#     jax = None
-#     mod = ModTensorflow(tf)
-    
-
-# elif backend_name == "jax":
-#     tf = None
-#     import jax
-
-#     if not enable_gpu:
-#         jax.config.update("jax_platform_name", "cpu")
-#     # Enable support for float64 operations.
-#     jax.config.update("jax_enable_x64", True)
-
-#     mod = ModNumpy(jax.numpy, jax=jax)
-# else:
-#     sys.stderr.write(f"Unknown ODIL_BACKEND='{backend_name}', options are: tf, jax\n")
-#     exit(1)
 
 
