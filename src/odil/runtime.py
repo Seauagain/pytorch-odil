@@ -11,7 +11,9 @@ if not int(os.environ.get("ODIL_MT", 0)):
     # os.environ["TENSORFLOW_INTER_OP_PARALLELISM"] = "1"
     # os.environ["TENSORFLOW_INTRA_OP_PARALLELISM"] = "1"
 
-enable_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "") not in ["", "-1"]
+cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+enable_gpu = cuda_visible not in ["", "-1"]
+gpu_ids = [id.strip() for id in cuda_visible.split(",") if id.strip()]
 
 if not enable_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -32,7 +34,7 @@ backend_name = "torch"
 DEVICE = "cpu"
 
 if torch.cuda.is_available():
-    DEVICE = "cuda:0"
+    DEVICE = f"cuda:{gpu_ids[0]}"
     torch.cuda.empty_cache()
     torch.cuda.set_device(DEVICE)
     torch.backends.cudnn.deterministic = True
@@ -41,7 +43,7 @@ else:
     try:
         import torch_npu
         if torch_npu.npu.is_available():
-            DEVICE = "npu:0"
+            DEVICE = f"npu:{gpu_ids[0]}"
             torch.npu.empty_cache()
             torch.npu.set_device(DEVICE)
         else:
@@ -66,7 +68,7 @@ if dtype_name in ["float32", "float64"]:
     # WNONE_TENSOR = torch.tensor([1.0], dtype=DTYPE, device=DEVICE)
     # ZERO_GRID = torch.tensor([0], dtype=torch.int, device=DEVICE)
     # ONE_GRID = torch.tensor([0, 1], dtype=torch.int, device=DEVICE)
-    ## core.py 需要
+    ## core.py needs it.
 else:
     sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
     exit(1)
