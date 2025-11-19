@@ -744,7 +744,7 @@ def operator_adv(ctx):
         :param paddings: Padding specifications
         :return: Padded field
         """
-        from odil.backend import ModTorch as mod 
+    
         qr = mod.pad(q, paddings, mode='reflect') # be carefull !
         qs = mod.pad(q, paddings, mode='symmetric')
         # qr = tf.pad(q, paddings, mode='reflect') # be careful
@@ -2102,7 +2102,7 @@ def pad_linear(u, paddings):
     """
     duplicate? subfunction
     """
-    from odil.backend import ModTorch as mod 
+
     ur = mod.pad(u, paddings, mode='reflect') # be carefull !
     us = mod.pad(u, paddings, mode='symmetric')
     # ur = np.pad(u, paddings, mode='reflect')
