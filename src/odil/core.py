@@ -5,7 +5,7 @@ import numpy as np
 
 from . import core_min
 # from .backend import ModTensorflow
-from .backend import ModTorch
+from .backend import torch, ModTorch
 from .util import assert_equal
 
 
@@ -57,6 +57,7 @@ class Domain:
         if dtype is None:
             from . import runtime
             dtype = runtime.DTYPE
+
         self.dtype = dtype
         self.mod = mod
         # dtype = np.float32
@@ -84,7 +85,33 @@ class Domain:
             self.mg_axes = mg_axes
             self.mg_interp = mg_interp
             self.mg_convert_all = mg_convert_all
+        
 
+        # Key: Precompute coordinate points for all dimensions during initialization and store them
+        self.points_nodes = []
+        self.points_cells = []
+
+        self._init_points_nodes()  
+        self._init_points_cells()  
+
+
+    def _init_points_nodes(self):
+        """Initialize coordinate points for all dimensions and store them in self.points_nodes"""
+        num_dims = len(self.lower)  # Number of dimensions (assuming lower/upper/cshape have the same length)
+        for d in range(num_dims):
+            # Precompute coordinate points for the current dimension d
+            x = self._points_node_1d(d)
+            self.points_nodes.append(x)
+
+
+    def _init_points_cells(self):
+        """Initialize coordinate points for all dimensions and store them in self.points_cells"""
+        num_dims = len(self.lower)  # Number of dimensions (assuming lower/upper/cshape have the same length)
+        for d in range(num_dims):
+            # Precompute coordinate points for the current dimension d
+            x = self._points_cell_1d(d)
+            self.points_cells.append(x)
+            
     @staticmethod
     def _names_to_indices(dims, dimnames):
         """
@@ -106,23 +133,43 @@ class Domain:
         """No use"""
         return core_min.Domain(self)
 
+    # def _points_cell_1d(self, d):
+    #     x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False)
+    #     if len(x) > 1:
+    #         x += (x[1] - x[0]) * 0.5
+    #     return x
+    
     def _points_cell_1d(self, d):
-        # x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False, dtype=self.dtype)
-        x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False)
-        if len(x) > 1:
+        """
+        torch.linspace没有endpoint,
+        >>> np.linspace(3, 10, 5, endpoint=False) 
+            array([3. , 4.4, 5.8, 7.2, 8.6])           # step_size = 7/5
+        >>> np.linspace(3, 10, 5, endpoint=True) 
+            array([ 3.  ,  4.75,  6.5 ,  8.25, 10.  ]) # step_size = 7/4
+        """
+        step_size = (self.upper[d] - self.lower[d]) / self.cshape[d]
+        x = torch.linspace(self.lower[d], self.upper[d] - step_size, self.cshape[d], dtype=self.dtype).to(self.device)
+        # x = np.linspace(self.lower[d], self.upper[d], self.cshape[d], endpoint=False)
+        if x.numel() > 1:
             x += (x[1] - x[0]) * 0.5
-        return self.mod.array2tensor(x, self.dtype).to(self.device) # return tensor
+        return x
 
+    # def _points_node_1d(self, d):
+    #     x = np.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1)
+    #     return x
+    
     def _points_node_1d(self, d):
-        # x = np.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1, dtype=self.dtype)
-        x = np.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1)
-        return self.mod.array2tensor(x, self.dtype).to(self.device)
+        x = torch.linspace(self.lower[d], self.upper[d], self.cshape[d] + 1, dtype=self.dtype).to(self.device)
+        return x
 
     def _points_1d(self, d, loc):
+        # print(f"----- _points_1d------: {d}")
         if loc == "c":
-            return self._points_cell_1d(d)
+            # return self._points_cell_1d(d)
+            return self.points_cells[d]
         elif loc == "n":
-            return self._points_node_1d(d)
+            # return self._points_node_1d(d)
+            return self.points_nodes[d]
         else:
             raise ValueError("Unknown loc=" + loc)
 
@@ -147,13 +194,21 @@ class Domain:
             return res[0]
         return res
 
+    # def _indices_cell_1d(self, d):
+    #     x = np.arange(self.cshape[d], dtype=int)
+    #     return self.mod.array2tensor(x, torch_dtype= self.mod.type_convert(np.int64)).to(self.device)
+
+    # def _indices_node_1d(self, d):
+    #     x = np.arange(self.cshape[d] + 1, dtype=int)
+    #     return self.mod.array2tensor(x, torch_dtype= self.mod.type_convert(np.int64)).to(self.device)
+
     def _indices_cell_1d(self, d):
-        x = np.arange(self.cshape[d], dtype=int)
-        return self.mod.array2tensor(x, torch_dtype= self.mod.type_convert(np.int64)).to(self.device)
+        x = torch.arange(self.cshape[d], dtype=torch.int).to(self.device)
+        return x
 
     def _indices_node_1d(self, d):
-        x = np.arange(self.cshape[d] + 1, dtype=int)
-        return self.mod.array2tensor(x, torch_dtype= self.mod.type_convert(np.int64)).to(self.device)
+        x = torch.arange(self.cshape[d] + 1, dtype=torch.int).to(self.device)
+        return x
 
     def _indices_1d(self, d, loc):
         if loc == "c":
@@ -669,6 +724,10 @@ def interp_to_finer(u, loc=None, method=None, mod=None, depth=1):
     upad = 2 * us - ur
     if method == "conv":
         # Convolution weights.
+        # from .runtime import WNODE_TENSOR, WCELL_TENSOR, WNONE_TENSOR
+        # wnode = WNODE_TENSOR.clone()
+        # wcell = WCELL_TENSOR.clone()
+        # wnone = WNONE_TENSOR.clone()
         wnode = np.array([1, 2, 1]) * 0.5
         wcell = np.array([1, 3, 3, 1]) * 0.25
         wnone = np.array([1.0])
@@ -676,6 +735,7 @@ def interp_to_finer(u, loc=None, method=None, mod=None, depth=1):
         w = wloc[loc[0]]
         for i in range(1, dim):
             w = np.kron(wloc[loc[i]], w[..., None])
+        # w = mod.reshape(w, w.shape + (1, 1))
         w = mod.cast(mod.reshape(w, w.shape + (1, 1)), u.dtype)
 
         # Output shape.
@@ -690,17 +750,28 @@ def interp_to_finer(u, loc=None, method=None, mod=None, depth=1):
         # Remove edges.
         oslice = {"n": slice(1, -1), "c": slice(3, -3), ".": slice(0, None)}
         res = res[(0,) + tuple(oslice[l] for l in loc) + (0,)]
-    elif method == "stack":
 
-        def term(*dd, ww=None):
+
+    elif method == "stack":
+        # from .runtime import WNODE_TENSOR, WCELL_TENSOR, WNONE_TENSOR,ZERO_GRID,ONE_GRID
+
+        def term(*dd, ww=None): # 可读性极差
             dd = [tuple(-v for v in d) for d in dd]
             return sum(w * mod.roll(upad, d, range(dim)) for d, w in zip(dd, ww) if w) / sum(ww)
+            # return sum(w * mod.roll(upad, [di.item() for di in d], range(dim)) for d, w in zip(dd, ww) if w) / sum(ww)
 
         # Offsets of nodes of a dim-dimensional cube.
         dd = np.meshgrid(*[[0] if l == "." else [0, 1] for l in loc], indexing="ij")
+        # dd = torch.meshgrid(*[ ZERO_GRID if l == "." else ONE_GRID for l in loc], indexing="ij")
         dshape = tuple(1 if l == "." else 2 for l in loc)
         # Example dim=2: dd = [(0,0), (0,1), (1,0), (1,1)].
         dd = np.reshape(dd, (dim, -1)).T
+        # dd = dd.reshape(dim, -1).T
+        # grid_tuple_tensors = torch.meshgrid(*[ ZERO_GRID if l == "." else ONE_GRID for l in loc], indexing="ij")
+        # dd = torch.stack([t.flatten() for t in grid_tuple_tensors])
+        # dd = dd.T  # 转置为 (total_points, dim)
+
+
         # Indices with location in node.
         sn = [i for i, l in enumerate(loc) if l == "n"]
         # Indices with location in cell.
@@ -708,13 +779,14 @@ def interp_to_finer(u, loc=None, method=None, mod=None, depth=1):
 
         def weight(r, d):
             return 3 ** (sum(1 - abs(r - d)[sc])) if np.all((r - d)[sn] <= 0) else 0  #
+            # return 3 ** (sum(1 - abs(r - d)[sc])) if torch.all((r - d)[sn] <= 0) else 0  #
 
         uu = [term(*dd, ww=[weight(r, d) for r in dd]) for d in dd]
         res = mod.stack(uu)
         res = mod.reshape(res, dshape + upad.shape)
         for i in range(dim):
             res = [res[i] for i in range(res.shape[0])]
-            res = mod.stack(res, axis=dim + i)
+            res = mod.stack(res, dim=dim + i)
         res = mod.reshape(res, tuple(s * d for s, d in zip(upad.shape, dshape)))
         # Remove edges.
         oslice = {"n": slice(0, -1), "c": slice(1, -3), ".": slice(0, None)}
@@ -765,6 +837,9 @@ def restrict_to_coarser(u, loc=None, method=None, mod=None, depth=1):
 
     if method == "conv":
         # Convolution weights.
+        # wnode = WNODE_TENSOR
+        # wcell = WCELL_TENSOR 
+        # wnone = WNONE_TENSOR
         wnode = np.array([1, 2, 1]) * 0.25
         wcell = np.array([1, 1]) * 0.5
         wnone = np.array([1.0])
@@ -1079,6 +1154,22 @@ class Problem:
         if "state" not in cache:
             cache["state"] = domain.init_state(state)
         
+
+        from pyinstrument import Profiler
+
+        def timecost(func):
+            """performance analysis tool"""
+            def wrapper(*args, **kwargs):
+                profiler = Profiler()
+                profiler.start()
+                res = func(*args, **kwargs)
+                profiler.stop()
+                profiler.print()
+                return res
+
+            return wrapper
+            
+        # @timecost
         def func(arrays, tracers):
              # ensure require_grad=True in array
             # arrays = [arr.detach().requires_grad_(True) for arr in arrays]
@@ -1086,38 +1177,52 @@ class Problem:
             # forward
             domain.arrays_to_state(arrays, cache["state"])
             ctx = Context(domain, cache["state"], extra=self.extra, tracers=tracers)
-            ff = self.operator(ctx) ## outside definition
-
+            ff = self.operator(ctx)  ## outside definition
             assert isinstance(ff, (tuple, list)) and len(ff), "Operator must return a non-empty list"
-            names = [f[0] if isinstance(f, tuple) else "" for f in ff]
-            nonempty = [name for name in names if name]
+
+            ## comprehension ifs are not supported in Pytorch JIT.##
+            names = []
+            for f in ff:
+                if isinstance(f, tuple):
+                    names.append(f[0])
+                else:
+                    names.append("")
+            # names = [f[0] if isinstance(f, tuple) else "" for f in ff]
+
+            nonempty = []
+            for name in names:
+                if name:  
+                    nonempty.append(name)
+            # nonempty = [name for name in names if name]
             assert len(nonempty) == len(set(nonempty)), "Name of fields must be unique, got {}".format(nonempty)
-            values = [f[1] if isinstance(f, tuple) else f for f in ff]
+            
+            values = []
+            for f in ff:
+                if isinstance(f, tuple):
+                    values.append(f[1])
+                else:
+                    values.append(f)
+            # values = [f[1] if isinstance(f, tuple) else f for f in ff]
+
             terms = [
                 mod.mean(v.value) if isinstance(v, Context.Raw) else mod.mean(mod.square(v)) for v in  values
             ]
             loss = sum(terms)
             norms = [t if isinstance(v, Context.Raw) else mod.sqrt(t) for t, v in zip(terms, values)]
             
-            # backward
-            # print("--loss: ", loss)
-            # print("--arrays: ", arrays)
-            # for i, tensor in enumerate(arrays):
-                # print(f"\nTensor {i}: requires_grad = {tensor.requires_grad}, shape = {tensor.shape} device = {tensor.device}")
-                # print("tensor: ", tensor)
-
             grads = torch.autograd.grad(loss, arrays, create_graph=False, retain_graph=False)
             grads = [g if g is not None else torch.zeros_like(u) for u, g in zip(arrays, grads)]
-        
+
             if "names" not in cache:
                 cache["names"] = names
             return loss.detach(), grads, terms, norms
 
-        if "func" not in cache:
-            if self.jit:
-                cache["func"] = torch.jit.script(func)
-            else:
-                cache["func"] = func
+        # if "func" not in cache:
+        #     if self.jit:
+        #         cache["func"] = torch.jit.script(func)
+        #     else:
+        #         cache["func"] = func
+        cache["func"] = func
 
         # calculate losses and gradients
         arrays = domain.arrays_from_state(state)
@@ -1327,12 +1432,6 @@ class Problem:
         if not state.initialized:
             raise RuntimeError("Uninitialized state, use `state = domain.init_state(state)`")
         loss, grads, terms, names, norms = self._eval_loss_grad(state)
-        # loss = np.array(loss)
-        loss = np.array(loss.detach().cpu())
-        terms = [term.detach().cpu().numpy() for term in terms]
-        norms = [norm.detach().cpu().numpy() for norm in norms]
-        # terms = list(map(np.array, terms))
-        # norms = list(map(np.array, norms))
         return loss, grads, terms, names, norms
 
     def _eval_operator_torch(self, state):
@@ -1626,7 +1725,7 @@ def extrap_quadh(u0, u1, u1p):
     """
     Quadratic extrapolation from points 0, 1, 1.5 to point 2.
     Suffix `h` means half.
-    """
+    """ 
     u2 = (u0 - 6 * u1 + 8 * u1p) / 3
     return u2
 
@@ -1735,8 +1834,7 @@ class Approx:
 
 def struct_to_numpy(mod, d):
     if mod.is_tensor(d):
-        # return np.array(d)
-        return mod.tensor2array(d, np.float32)
+        return np.array(d.detach().cpu())
     if isinstance(d, dict):
         for key in d:
             d[key] = struct_to_numpy(mod, d[key])
