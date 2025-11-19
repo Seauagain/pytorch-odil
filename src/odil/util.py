@@ -14,6 +14,12 @@ g_log_file = sys.stderr  # File used by printlog()
 g_log_echo = False  # True if printlog() should print to stderr.
 
 
+def ten2arr(tensor):
+    if isinstance(tensor, np.ndarray):
+        return tensor
+    return tensor.detach().cpu().numpy()
+
+
 def assert_equal(first, second, msg=""):
     if not (first == second):
         raise ValueError("Expected equal '{:}' and '{:}'{}".format(first, second, msg))
@@ -393,7 +399,7 @@ def make_callback(
                 printlog(
                     "residual: "
                     + ", ".join(
-                        "{}:{:.5g}".format(name or str(i), np.array(norm))
+                        "{}:{:.5g}".format(name or str(i), ten2arr(norm))
                         for i, (norm, name) in enumerate(zip(norms, names))
                     )
                 )
@@ -429,7 +435,7 @@ def make_callback(
             if pinfo and "norms" in pinfo:
                 norms, names = pinfo["norms"], pinfo["names"]
                 for i, (norm, name) in enumerate(zip(norms, names)):
-                    history.append("norm_{:}".format(name or str(i)), np.array(norm))
+                    history.append("norm_{:}".format(name or str(i)), ten2arr(norm))
             if pinfo and "loss" in pinfo:
                 history.append("loss", pinfo["loss"])
             if args.linsolver_history and "linsolver" in pinfo:
