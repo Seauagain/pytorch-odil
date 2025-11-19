@@ -20,10 +20,26 @@ import torch
 from odil.backend import ModTorch
 from odil.runtime import DTYPE, DEVICE
 from data_processing import correct_outside_skull_mask
+printlog = odil.util.printlog
+
+from pyinstrument import Profiler
+def timecost(func):
+    """performance analysis tool"""
+    def wrapper(*args, **kwargs):
+        profiler = Profiler()
+        profiler.start()
+        res = func(*args, **kwargs)
+        profiler.stop()
+        profiler.print()
+        return res
+
+    return wrapper
 
 mod = ModTorch(torch)
 
-printlog = odil.util.printlog
+
+
+
 
 # Data tensors
 global wm_data, gm_data, csf_data, segm_data, pet_data
@@ -55,7 +71,7 @@ global D_ch, R_ch, rho_ch, matter_th
 D_ch = 0.13
 R_ch = 10
 rho_ch = 0.06
-matter_th = 0.1
+matter_th = 0.1 ## 阈值
 
 # Initial and threshold settings
 global c_init, th_down_s, th_up_s
@@ -73,7 +89,15 @@ global TS, kxreg, ktreg
 kxreg = 11
 ktreg = 80
 
+## global diffusion coeffients D(x) = m_Tildas(WM, GM, th)
+global GLOBAL_M_TILDAS, CSHAPE_SIZE_ZEROS, TENSOR_ONE, MASK1_MASK3
+
+
+
+
 def ten2arr(tensor):
+    if isinstance(tensor, np.ndarray):
+        return tensor
     return tensor.detach().cpu().numpy()
 
 
@@ -289,8 +313,8 @@ def gradient_np(array, step, axis):
     """
     Compute the gradient of a NumPy array using a central difference scheme.
     """
-    shifted_forward = torch.roll(array, -1, axis=axis)
-    shifted_backward = torch.roll(array, 1, axis=axis)
+    shifted_forward = torch.roll(array, -1, dims=axis)
+    shifted_backward = torch.roll(array, 1, dims=axis)
     gradient = (shifted_forward - shifted_backward) / (2 * step)
     return gradient
 
@@ -332,12 +356,17 @@ def compute_strain_tensor_lagrangian_full_np(u_x, u_y, u_z, dx, dy, dz):
 
     # Combine strain tensor components into a single 6D array
     # E = np.array([[E_xx, E_xy, E_xz], [E_xy, E_yy, E_yz], [E_xz, E_yz, E_zz]])
-    E = torch.stack([
-        torch.stack([E_xx, E_xy, E_xz], dim=-1),
-        torch.stack([E_xy, E_yy, E_yz], dim=-1),
-        torch.stack([E_xz, E_yz, E_zz], dim=-1),
-                    ], dim=-2)
-    return E
+    # E = torch.stack([
+    #     torch.stack([E_xx, E_xy, E_xz], dim=-1),
+    #     torch.stack([E_xy, E_yy, E_yz], dim=-1),
+    #     torch.stack([E_xz, E_yz, E_zz], dim=-1),
+    #                 ], dim=-2)
+
+    # return E
+
+    # Combine strain tensor components into a single 6D array
+    E = torch.stack([  torch.stack([E_xx, E_xy, E_xz]), torch.stack([E_xy, E_yy, E_yz]), torch.stack([E_xz, E_yz, E_zz])  ])
+    return E # check it! E shape:  (3, 3, 128, 72, 72, 72)
 
 
 
@@ -436,14 +465,14 @@ def dice_score_tf(mask1, mask2):
     # return 2. * intersection / (tf.reduce_sum(mask1_float) + tf.reduce_sum(mask2_float))
 
     # Convert boolean masks to a dtype that PyTorch operations can work with
-    mask1_float = mask1.to(dtype=dtype)
-    mask2_float = mask2.to(dtype=dtype)
+    # mask1_float = mask1.to(dtype=dtype)
+    # mask2_float = mask2.to(dtype=dtype)
     
     # Compute the intersection
-    intersection = torch.sum(mask1_float * mask2_float)
+    intersection = torch.sum(mask1 * mask2)
     
     # Compute Dice score
-    return 2. * intersection / (torch.sum(mask1_float) + torch.sum(mask2_float))
+    return 2. * intersection / (torch.sum(mask1) + torch.sum(mask2))
 
 
 
@@ -455,17 +484,24 @@ def calculate_dice_scores(segm, coeff, c_euler_slice):
     # # Convert these masks to TensorFlow tensors if necessary
     # edema_mask_pred_tf = tf.convert_to_tensor(edema_mask_pred, dtype=tf.bool)
     # core_mask_pred_tf = tf.convert_to_tensor(core_mask_pred, dtype=tf.bool)
-    # Convert to PyTorch tensors with boolean type
-    mask1_bool = torch.as_tensor(mask1, dtype=torch.bool)
-    mask2_bool = torch.as_tensor(mask2, dtype=torch.bool)
+    # Convert to PyTorch tensors with boolean type be careful!!
+    # edema_mask_pred_tf = torch.as_tensor(edema_mask_pred, dtype=torch.bool, device=edema_mask_pred.device) # tmd. tensor is not on device!
+    # core_mask_pred_tf = torch.as_tensor(core_mask_pred, dtype=torch.bool, device=core_mask_pred.device)
+    # edema_mask_pred_tf = edema_mask_pred
+    # core_mask_pred_tf = core_mask_pred
+
 
     # Calculate masks from your segmentation
     edema_mask_true = get_edema_mask(segm)
     core_mask_true = get_core_mask(segm)
 
+    # print("segm ", segm.device )
+    # print("edema_mask_true ", edema_mask_true.device )
+    # print("core_mask_true ", core_mask_true.device )
+
     # Calculate Dice scores
-    dice_score_edema = dice_score_tf(edema_mask_true, edema_mask_pred_tf)
-    dice_score_core = dice_score_tf(core_mask_true, core_mask_pred_tf)
+    dice_score_edema = dice_score_tf(edema_mask_true, edema_mask_pred)
+    dice_score_core = dice_score_tf(core_mask_true, core_mask_pred)
 
     return dice_score_edema, dice_score_core
 
@@ -521,11 +557,11 @@ def get_edema_loss_tf(c, th_down, th_up, segm):
 def get_outside_segm_mask(segm, mod=torch):
     # Use TensorFlow operation for equality check
     # return tf.equal(segm, 0)
-    return torch.equal(segm, 0)
+    return segm == 0
 
 def get_outside_segm_loss_tf(c, th_down, segm):
+    
     outside_segm_mask = get_outside_segm_mask(segm)
-
     # Define the condition where c[-1] is not below th_down
     not_below_condition = c >= th_down
 
@@ -544,55 +580,66 @@ def get_outside_segm_loss_tf(c, th_down, segm):
 
     return outside_segm_loss
 
+
+
 def pet_loss(pet_data, segm_data, c_euler):
-    # Create a mask where segm_data is 1 or 3
-    # mask = tf.logical_or(segm_data == 1, segm_data == 3)
+    """
+    tested
+    """
     mask = (segm_data == 1) | (segm_data == 3)
+
+    count = torch.sum(mask)
+    pet_masked = pet_data * mask
+    euler_masked = c_euler * mask
+    # pet_masked = pet_data[mask]
+    # euler_masked = c_euler[mask]
+
+    mean_pet = torch.sum( pet_masked ) / count 
+    mean_euler = torch.sum( euler_masked ) / count
+
+    # covariance and std (sum-based, matching your TF form)
+    pet_centered = (pet_data - mean_pet) * mask
+    euler_centered = (c_euler - mean_euler) * mask
+
+    cov = (pet_centered * euler_centered).sum()
+    std_pet = torch.sqrt( (pet_centered**2).sum()) 
+    std_euler = torch.sqrt( (euler_centered**2).sum() )
+
+    if count.size() == 0:
+        return TENSOR_ONE.clone()
+
+    corr = cov / (std_pet * std_euler)
+    loss = 1.0 - corr
+    return loss 
+
+
+def pet_loss_tf(pet_data, segm_data, c_euler):
+    # Create a mask where segm_data is 1 or 3
+    mask = tf.logical_or(segm_data == 1, segm_data == 3)
     
     # Apply the mask to flatten only the selected voxels
-    # pet_data_masked = tf.boolean_mask(pet_data, mask)
-    # c_euler_masked = tf.boolean_mask(c_euler, mask)
-    pet_data_masked = pet_data[mask]
-    c_euler_masked = c_euler[mask]
+    pet_data_masked = tf.boolean_mask(pet_data, mask)
+    c_euler_masked = tf.boolean_mask(c_euler, mask)
 
     # Ensure both tensors are of the same data type
-    # pet_data_masked = tf.cast(pet_data_masked, dtype=tf.float32)
-    # c_euler_masked = tf.cast(c_euler_masked, dtype=tf.float32)
-    pet_data_masked = pet_data_masked.to(dtype=torch.float32)
-    c_euler_masked = c_euler_masked.to(dtype=torch.float32)
+    pet_data_masked = tf.cast(pet_data_masked, dtype=tf.float32)
+    c_euler_masked = tf.cast(c_euler_masked, dtype=tf.float32)
     
-    # # Compute Pearson correlation on the selected voxels
-    # def pearson_correlation(x, y):
-    #     mean_x = tf.reduce_mean(x)
-    #     mean_y = tf.reduce_mean(y)
-    #     normalized_x = x - mean_x
-    #     normalized_y = y - mean_y
-    #     covariance = tf.reduce_sum(normalized_x * normalized_y)
-    #     std_dev_x = tf.sqrt(tf.reduce_sum(tf.square(normalized_x)))
-    #     std_dev_y = tf.sqrt(tf.reduce_sum(tf.square(normalized_y)))
-    #     return covariance / (std_dev_x * std_dev_y)
-    # if tf.size(pet_data_masked) == 0 or tf.size(c_euler_masked) == 0:
-    #     return 1.0  # If no valid voxels, return maximum loss
-
     # Compute Pearson correlation on the selected voxels
     def pearson_correlation(x, y):
-        mean_x = torch.mean(x)
-        mean_y = torch.mean(y)
+        mean_x = tf.reduce_mean(x)
+        mean_y = tf.reduce_mean(y)
         normalized_x = x - mean_x
         normalized_y = y - mean_y
-        covariance = torch.sum(normalized_x * normalized_y)
-        std_dev_x = torch.sqrt(torch.sum(torch.square(normalized_x)))
-        std_dev_y = torch.sqrt(torch.sum(torch.square(normalized_y)))
-        # Avoid division by zero
-        if std_dev_x == 0 or std_dev_y == 0:
-            return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+        covariance = tf.reduce_sum(normalized_x * normalized_y)
+        std_dev_x = tf.sqrt(tf.reduce_sum(tf.square(normalized_x)))
+        std_dev_y = tf.sqrt(tf.reduce_sum(tf.square(normalized_y)))
         return covariance / (std_dev_x * std_dev_y)
-
-    if pet_data_masked.numel() == 0 or c_euler_masked.numel() == 0:
-        return 1.0  # If no valid voxels, return maximum loss # be careful
+    
+    if tf.size(pet_data_masked) == 0 or tf.size(c_euler_masked) == 0:
+        return 1.0  # If no valid voxels, return maximum loss
     correlation = pearson_correlation(pet_data_masked, c_euler_masked)
     return 1 - correlation  # loss is 1 minus the correlation coefficient
-
 
 
 def compute_strain_tensor_lagrangian_full(u_x, u_y, u_z, domain):
@@ -661,11 +708,13 @@ def m_Tildas(WM, GM, th):
     GM_tilda_y = torch.where((torch.roll(WM, -1, dims=1) + torch.roll(GM, -1, dims=1) >= th) & (WM + GM >= th), (torch.roll(GM, -1, dims=1) + GM) / 2, torch.tensor(0.0, device=GM.device))
     GM_tilda_z = torch.where((torch.roll(WM, -1, dims=2) + torch.roll(GM, -1, dims=2) >= th) & (WM + GM >= th), (torch.roll(GM, -1, dims=2) + GM) / 2, torch.tensor(0.0, device=GM.device))
 
-    
     return {"WM_t_x": WM_tilda_x,"WM_t_y": WM_tilda_y,"WM_t_z": WM_tilda_z,"GM_t_x": GM_tilda_x,"GM_t_y": GM_tilda_y,"GM_t_z": GM_tilda_z}
 
 def get_D(WM, GM, th, Dw, Dw_ratio):
-    M = m_Tildas(WM, GM, th)
+
+    # M = m_Tildas(WM, GM, th)
+    M = GLOBAL_M_TILDAS # should be initialized globally.
+
     D_minus_x = Dw*( M["WM_t_x"] + M["GM_t_x"] / Dw_ratio)
     D_minus_y = Dw*( M["WM_t_y"] + M["GM_t_y"] / Dw_ratio)
     D_minus_z = Dw*( M["WM_t_z"] + M["GM_t_z"] / Dw_ratio)
@@ -677,8 +726,10 @@ def get_D(WM, GM, th, Dw, Dw_ratio):
     return {"D_minus_x": D_minus_x, "D_minus_y": D_minus_y, "D_minus_z": D_minus_z,"D_plus_x": D_plus_x, "D_plus_y": D_plus_y, "D_plus_z": D_plus_z}
 
 
+# @timecost
 def operator_adv(ctx):
     global gamma, BC_w, pde_w, balance_w, neg_w, D_ch, R_ch, outside_skull_mask, neg_w,CM_pos, pet_w
+
     dt = ctx.step('t')
     dx = ctx.step('x')
     dy = ctx.step('y')
@@ -697,14 +748,50 @@ def operator_adv(ctx):
         u = ctx.field(key, st, sx, sy, sz)
         return u
 
+
+
+    def gather_nd(params, indices):
+        '''
+        4D example
+        params: tensor shaped [n_1, n_2, n_3, n_4] --> 4 dimensional
+        indices: tensor shaped [m_1, m_2, m_3, m_4, 4] --> multidimensional list of 4D indices
+
+        returns: tensor shaped [m_1, m_2, m_3, m_4]
+
+        ND_example
+        params: tensor shaped [n_1, ..., n_p] --> d-dimensional tensor
+        indices: tensor shaped [m_1, ..., m_i, d] --> multidimensional list of d-dimensional indices
+
+        returns: tensor shaped [m_1, ..., m_1]
+        '''
+
+        out_shape = indices.shape[:-1]
+        indices = indices.unsqueeze(0).transpose(0, -1)  # roll last axis to fring
+        ndim = indices.shape[0]
+        indices = indices.long()
+        idx = torch.zeros_like(indices[0], device=indices.device).long()
+        m = 1
+
+        for i in range(ndim)[::-1]:
+            idx += indices[i] * m
+            m *= params.size(i)
+
+        out = torch.take(params, idx)
+
+        return out.view(out_shape)
+
     
     def field_to_particles_3d(q_src, it):
+        """
+        be very careful!
+        """
         q_src = ctx.cast(q_src)
         # Pad the field for 3 dimensions
+
         q_src = pad_linear(q_src, [(1, 1), (1, 1), (1, 1)])
 
         # Initialize the tensor for the particle field
-        qp = torch.zeros(tix[it].shape, dtype=q_src.dtype)
+        qp = torch.zeros(tix[it].shape, dtype=q_src.dtype, device=q_src.device)
 
         # Loop through all combinations of x, y, z coordinates and weights
         for jx, jy, jz, jw in [
@@ -718,9 +805,12 @@ def operator_adv(ctx):
             (tixp, tiyp, tizp, sx1 * sy1 * sz1),
         ]:
             idx = torch.stack([jx[it] + 1, jy[it] + 1, jz[it] + 1], dim=-1)
-            # qp += jw[it] * tf.gather_nd(q_src, idx)
-            qp += jw[it] * q_src[idx]
+            # print("jw[it]: ", jw[it].shape, jw[it])
+            # print("tf.gather_nd(q_src, idx): ", gather_nd(q_src, idx), gather_nd(q_src, idx).shape)
+            qp += jw[it] * gather_nd(q_src, idx)
         return qp
+
+    
 
     def laplace(st):
         """
@@ -744,8 +834,7 @@ def operator_adv(ctx):
         :param paddings: Padding specifications
         :return: Padded field
         """
-    
-        qr = mod.pad(q, paddings, mode='reflect') # be carefull !
+        qr = mod.pad(q, paddings, mode='reflect') # be careful !
         qs = mod.pad(q, paddings, mode='symmetric')
         # qr = tf.pad(q, paddings, mode='reflect') # be careful
         # qs = tf.pad(q, paddings, mode='symmetric')
@@ -838,7 +927,7 @@ def operator_adv(ctx):
     y0 = coeff[3]
     z0 = coeff[4]
     # gamma = tf.constant(1.0,dtype=dtype)*coeff[7]
-    gamma = torch.tensor(1.0, dtype=dtype, device=coeff.device) * coeff[7]
+    gamma = TENSOR_ONE.clone() * coeff[7]
     th_down = coeff[5]
     th_up = coeff[6]
     
@@ -892,7 +981,7 @@ def operator_adv(ctx):
     
     #outside of matter mask
     combined_matter = wm_data + gm_data
-    # combined_matter_mask = (combined_matter < matter_th).astype(int) # be carefull
+    # combined_matter_mask = (combined_matter < matter_th).astype(int) # be careful
     combined_matter_mask = (combined_matter < matter_th).to(torch.int)
     # Repeat the combined_matter_mask across the time dimension
     # combined_matter_mask_4d = np.repeat(combined_matter_mask[np.newaxis, :, :], nt, axis=0)
@@ -905,7 +994,7 @@ def operator_adv(ctx):
     
     #Data fit
     c_euler = particles_to_field_3d_average(c[-1],tx[-1],ty[-1],tz[-1],ctx.domain)
-    res += [get_outside_segm_loss_tf(c_euler,th_down,segm_data)*outside_w]
+    res += [get_outside_segm_loss_tf(c_euler, th_down, segm_data)*outside_w]
     res += [get_edema_loss_tf(c_euler,th_down,th_up,segm_data)*edema_w]
     res += [get_core_loss_tf(c_euler,th_up,segm_data)*core_w]
     
@@ -976,47 +1065,6 @@ def operator_adv(ctx):
     
     return res
 
-# def calculate_symmetry_loss(healthy, scale_factor=1):
-#     # Assuming healthy shape is [depth, height, width]
-#     depth, height, width = healthy.shape
-
-#     # Downsample the tensor if scale_factor is greater than 1
-#     if scale_factor > 1:
-#         # Define the pooling size and strides for 3D data (batch, depth, height, width, channels)
-#         pool_size = [1, 1, scale_factor, scale_factor, 1]  # [batch, depth, height, width, channels]
-#         strides = [1, 1, scale_factor, scale_factor, 1]
-
-#         # Reshape the tensor to 5D for pooling (batch_size, depth, height, width, channels)
-#         healthy_reshaped = tf.reshape(healthy, [1, depth, height, width, 1])
-        
-#         # Perform average pooling
-#         healthy_downsampled = tf.nn.avg_pool3d(input=healthy_reshaped, ksize=pool_size, strides=strides, padding='VALID')
-#         new_depth, new_height, new_width = healthy_downsampled.shape[1:4]
-#         healthy_downsampled = tf.reshape(healthy_downsampled, [new_depth, new_height, new_width])
-#     else:
-#         healthy_downsampled = healthy
-#         new_depth, new_height, new_width = healthy.shape
-
-#     # Update dimensions after downsampling
-#     _, height_downsampled, _ = healthy_downsampled.shape
-    
-#     # Split the tensor into upper and lower halves along the Y-axis (height)
-#     mid = height_downsampled // 2
-#     upper_half = healthy_downsampled[:, :mid, :]
-#     lower_half = healthy_downsampled[:, mid:height_downsampled, :] if height_downsampled % 2 == 0 else healthy_downsampled[:, mid+1:, :]
-    
-#     # Mirror the lower half for comparison
-#     lower_half_mirrored = tf.reverse(lower_half, axis=[1])  # Use axis=1 for the Y-axis (height)
-    
-#     # Calculate the absolute difference between the mirrored lower half and the upper half
-#     difference = tf.abs(upper_half - lower_half_mirrored)
-    
-#     # Compute the loss as the mean of the differences
-#     loss = tf.reduce_mean(difference)
-    
-#     return loss
-
-
 def calculate_symmetry_loss(healthy, scale_factor=1):
     # Assuming healthy shape is [depth, height, width]
     depth, height, width = healthy.shape
@@ -1027,7 +1075,7 @@ def calculate_symmetry_loss(healthy, scale_factor=1):
         healthy_reshaped = healthy.view(1, 1, depth, height, width)
         
         # Perform average pooling (kernel and stride for depth=1, height/width=scale_factor)
-        healthy_downsampled = F.avg_pool3d(
+        healthy_downsampled = torch.nn.functional.avg_pool3d(
             healthy_reshaped, 
             kernel_size=(1, scale_factor, scale_factor), 
             stride=(1, scale_factor, scale_factor), 
@@ -1068,9 +1116,6 @@ def calculate_symmetry_loss(healthy, scale_factor=1):
 
 
 
-
-
-
 def normalize_intensities(wm_intensity, gm_intensity, csf_intensity, c):
     total = wm_intensity + gm_intensity + csf_intensity + c
     
@@ -1078,8 +1123,8 @@ def normalize_intensities(wm_intensity, gm_intensity, csf_intensity, c):
     below_threshold = total < matter_th
     
     # Avoid division by zero
-    total = torch.where(below_threshold, torch.tensor(1, dtype=dtype, device=total.device), total)
-    equal_proportion = torch.tensor(0.25, dtype=dtype, device=total.device)
+    total = torch.where(below_threshold, TENSOR_ONE.clone(), total)
+    equal_proportion = 0.25 * TENSOR_ONE.clone()
     
     # Normalize intensities
     normalized_wm = torch.where(below_threshold, equal_proportion, wm_intensity / total)
@@ -1428,19 +1473,24 @@ def lagrange_to_euler_single_slice(c_lagrange, tx, ty, tz, domain, time_slice_in
     c_flat = c_lagrange[time_slice_index].flatten()
     
     # Create a 3D grid for interpolation
-    grid_x, grid_y, grid_z = np.mgrid[domain.lower[1]:domain.upper[1]:nx*1j, 
-                                      domain.lower[2]:domain.upper[2]:ny*1j, 
-                                      domain.lower[3]:domain.upper[3]:nz*1j]
+    grid_x, grid_y, grid_z = np.mgrid[domain.lower[1].item():domain.upper[1].item():nx*1j, 
+                                  domain.lower[2].item():domain.upper[2].item():ny*1j, 
+                                  domain.lower[3].item():domain.upper[3].item():nz*1j]
     
+
     # Perform the interpolation for the specified time slice
-    c_eulerian_slice = griddata((tx_flat, ty_flat, tz_flat), c_flat, (grid_x, grid_y, grid_z), method=method)
+    c_eulerian_slice = griddata(( ten2arr(tx_flat), ten2arr(ty_flat), ten2arr(tz_flat)), ten2arr(c_flat), (grid_x, grid_y, grid_z), method=method)
 
     # Handle remaining NaNs in the result
     c_eulerian_slice = np.nan_to_num(c_eulerian_slice, nan=0)
-    return torch.from_numpy(c_eulerian_slice).to(dtype=dtype)
+    return c_eulerian_slice
+    # return torch.from_numpy(c_eulerian_slice).to(dtype=dtype)
+
 
 from scipy.interpolate import NearestNDInterpolator
+
 def lagrange_to_euler_single_slice2(c_lagrange, tx, ty, tz, domain, time_slice_index):
+
     nx = domain.size('x')
     ny = domain.size('y')
     nz = domain.size('z')
@@ -1455,9 +1505,9 @@ def lagrange_to_euler_single_slice2(c_lagrange, tx, ty, tz, domain, time_slice_i
     interpolator = NearestNDInterpolator(points, values)
 
     # Create a regular grid for the Eulerian frame
-    grid_x, grid_y, grid_z = np.mgrid[domain.lower[1]:domain.upper[1]:nx*1j, 
-                                      domain.lower[2]:domain.upper[2]:ny*1j, 
-                                      domain.lower[3]:domain.upper[3]:nz*1j]
+    grid_x, grid_y, grid_z = np.mgrid[ domain.lower[1]:domain.upper[1]:nx*1j, 
+                                       domain.lower[2]:domain.upper[2]:ny*1j, 
+                                       domain.lower[3]:domain.upper[3]:nz*1j ]
 
     # Perform the interpolation onto the regular grid
     c_eulerian_slice = interpolator(grid_x, grid_y, grid_z)
@@ -1657,75 +1707,133 @@ def state_to_traj(domain, state, mod=torch):
     return tx, ty, tz
 
 
-
-
-
-def particles_to_field_3d_average(up, tx, ty, tz, domain):
+def particles_to_field_3d_average(up, tx, ty, tz, domain): ## torch version
     """
-    tested
+    be careful
     """
     dx = domain.step('x')
     dy = domain.step('y')
     dz = domain.step('z')
     nx = domain.size('x')
     ny = domain.size('y')
-    nz = domain.size('z')
-
-    device = up.device
-    lower = torch.tensor(domain.lower, device=device)[1:]
-    upper = torch.tensor(domain.upper, device=device)[1:]
+    nz = domain.size('z')   
+    
+    # domain_lower = torch.tensor(domain.lower, device=tx.device, dtype=tx.dtype)
+    # # domain_upper = torch.tensor(domain.upper, device=tx.device, dtype=tx.dtype)
+    # domain_lower = domain.lower.item() * TENSOR_ONE.clone()
+    # domain_upper = domain.upper.item() * TENSOR_ONE.clone()
 
     # Clip the trajectories within the domain boundaries
-    tx = torch.clamp(tx, min=lower[0].item(), max=upper[0].item())
-    ty = torch.clamp(ty, min=lower[1].item(), max=upper[1].item())
-    tz = torch.clamp(tz, min=lower[2].item(), max=upper[2].item())
+    tx = torch.clamp(tx, min=domain.lower[1].item(), max=domain.upper[1].item())
+    ty = torch.clamp(ty, min=domain.lower[2].item(), max=domain.upper[2].item())
+    tz = torch.clamp(tz, min=domain.lower[3].item(), max=domain.upper[3].item())
 
     # Calculate nearest grid indices
-    ix = torch.round((tx - lower[0]) / dx).int()
-    iy = torch.round((ty - lower[1]) / dy).int()
-    iz = torch.round((tz - lower[2]) / dz).int()
+    ix = torch.round((tx - domain.lower[1]) / dx).to(torch.long)
+    iy = torch.round((ty - domain.lower[2]) / dy).to(torch.long)
+    iz = torch.round((tz - domain.lower[3]) / dz).to(torch.long)
 
     # Ensure indices are within bounds
-    ix = torch.clamp(ix, 0, nx - 1)
-    iy = torch.clamp(iy, 0, ny - 1)
-    iz = torch.clamp(iz, 0, nz - 1)
+    ix = torch.clamp(ix, min=0, max=nx - 1)
+    iy = torch.clamp(iy, min=0, max=ny - 1)
+    iz = torch.clamp(iz, min=0, max=nz - 1)
 
-    # Stack indices for scatter operation
-    indices = torch.stack([ix, iy, iz], dim=-1)
+    # Flatten the indices to 1D for efficient aggregation
+    flat_indices = ix * ny * nz + iy * nz + iz
 
-    # Initialize the output grid and count grid
-    u = torch.zeros((nx, ny, nz), dtype=up.dtype, device=device)
-    counts = torch.zeros((nx, ny, nz), dtype=up.dtype, device=device)
+    # Initialize flattened output grids
+    # u_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=up.device)
+    # counts_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=up.device)
+    u_flat = CSHAPE_SIZE_ZEROS.clone()      # 多尺度网格？
+    counts_flat = CSHAPE_SIZE_ZEROS.clone()
 
-    # Create flat indices for 3D scattering
-    flat_indices = indices.reshape(-1, 3).long()
-    
-    # Use scatter_add to accumulate values and counts
-    u = u.scatter_add_(0, flat_indices[:, 0].unsqueeze(1).unsqueeze(2).expand(-1, ny, nz), 
-                      up.reshape(-1, 1, 1).expand(-1, ny, nz))
-    counts = counts.scatter_add_(0, flat_indices[:, 0].unsqueeze(1).unsqueeze(2).expand(-1, ny, nz), 
-                               torch.ones_like(up).reshape(-1, 1, 1).expand(-1, ny, nz))
+    # Create a tensor of ones for counting
+    ones = torch.ones_like(up)
 
-    # Alternative implementation using linear indices:
-    # Convert 3D indices to linear indices
-    linear_indices = ix * (ny * nz) + iy * nz + iz
-    linear_indices = linear_indices.long()
-    
-    # Use bincount for efficient aggregation
-    u_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=device)
-    counts_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=device)
-    
-    u_flat.scatter_add_(0, linear_indices, up)
-    counts_flat.scatter_add_(0, linear_indices, torch.ones_like(up))
-    
+    # Aggregate contributions and counts using index_add_
+    u_flat.index_add_(0, flat_indices.flatten(), up.flatten())
+    counts_flat.index_add_(0, flat_indices.flatten(), ones.flatten())
+
     # Avoid division by zero
     counts_flat = torch.where(counts_flat == 0, torch.ones_like(counts_flat), counts_flat)
-    
-    # Compute average and reshape back to 3D
+
+    # Compute the average on the flattened grid
     u_average_flat = u_flat / counts_flat
-    u_average = u_average_flat.reshape(nx, ny, nz)
+
+    # Reshape back to 3D
+    u_average = u_average_flat.view(nx, ny, nz)
 
     return u_average
+
+
+# def particles_to_field_3d_average(up, tx, ty, tz, domain):
+#     """
+#     tested
+#     """
+#     dx = domain.step('x')
+#     dy = domain.step('y')
+#     dz = domain.step('z')
+#     nx = domain.size('x')
+#     ny = domain.size('y')
+#     nz = domain.size('z')
+
+#     device = up.device
+#     lower = torch.tensor(domain.lower, device=device)[1:]
+#     upper = torch.tensor(domain.upper, device=device)[1:]
+
+#     # Clip the trajectories within the domain boundaries
+#     tx = torch.clamp(tx, min=lower[0].item(), max=upper[0].item())
+#     ty = torch.clamp(ty, min=lower[1].item(), max=upper[1].item())
+#     tz = torch.clamp(tz, min=lower[2].item(), max=upper[2].item())
+
+#     # Calculate nearest grid indices
+#     ix = torch.round((tx - lower[0]) / dx).int()
+#     iy = torch.round((ty - lower[1]) / dy).int()
+#     iz = torch.round((tz - lower[2]) / dz).int()
+
+#     # Ensure indices are within bounds
+#     ix = torch.clamp(ix, 0, nx - 1)
+#     iy = torch.clamp(iy, 0, ny - 1)
+#     iz = torch.clamp(iz, 0, nz - 1)
+
+#     # Stack indices for scatter operation
+#     indices = torch.stack([ix, iy, iz], dim=-1)
+
+#     # Initialize the output grid and count grid
+#     u = torch.zeros((nx, ny, nz), dtype=up.dtype, device=device)
+#     counts = torch.zeros((nx, ny, nz), dtype=up.dtype, device=device)
+
+#     # Create flat indices for 3D scattering
+#     flat_indices = indices.reshape(-1, 3).long()
+    
+#     # Use scatter_add to accumulate values and counts
+#     u = u.scatter_add_(0, flat_indices[:, 0].unsqueeze(1).unsqueeze(2).expand(-1, ny, nz), 
+#                       up.reshape(-1, 1, 1).expand(-1, ny, nz))
+#     counts = counts.scatter_add_(0, flat_indices[:, 0].unsqueeze(1).unsqueeze(2).expand(-1, ny, nz), 
+#                                torch.ones_like(up).reshape(-1, 1, 1).expand(-1, ny, nz))
+
+#     # Alternative implementation using linear indices:
+#     # Convert 3D indices to linear indices
+#     linear_indices = ix * (ny * nz) + iy * nz + iz
+#     linear_indices = linear_indices.long()
+    
+#     # Use bincount for efficient aggregation
+#     u_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=device)
+#     counts_flat = torch.zeros(nx * ny * nz, dtype=up.dtype, device=device)
+    
+#     print("linear_indices: ", linear_indices.shape)
+#     print("u_flat: ", u_flat.shape)
+#     u_flat.scatter_add_(0, linear_indices, up)  
+#     counts_flat.scatter_add_(0, linear_indices, torch.ones_like(up))
+    
+#     # Avoid division by zero
+#     counts_flat = torch.where(counts_flat == 0, torch.ones_like(counts_flat), counts_flat)
+    
+#     # Compute average and reshape back to 3D
+#     u_average_flat = u_flat / counts_flat
+#     u_average = u_average_flat.reshape(nx, ny, nz)
+
+#     return u_average
 
 # def particles_to_field_3d_average(up, tx, ty, tz, domain): ## tf version
 #     dx = domain.step('x')
@@ -1786,6 +1894,7 @@ def particles_to_field_3d(up, tx, ty, tz, domain):
     nz = domain.size('z')
 
     # Clip the trajectories within the domain boundaries
+
     tx = torch.clamp(tx, domain.lower[1], domain.upper[1])
     ty = torch.clamp(ty, domain.lower[2], domain.upper[2])
     tz = torch.clamp(tz, domain.lower[3], domain.upper[3])
@@ -1868,31 +1977,31 @@ def particles_to_field_3d(up, tx, ty, tz, domain):
     u = u / (w + 1e-8)
     return u
 
-def particles_to_field(up, tx, ty, tz, domain):
+
+
+
+def particles_to_field(up, tx, ty, tz, domain): # be very careful
     '''
     up: values carried by particles, shape (nx, ny, nz)
     tx, ty, tz: trajectories of particles, shape (nt, nx, ny, nz)
-    domain: domain object with step(), size(), lower, upper, dtype attributes
     '''
+    # 获取设备和数据类型
+    device = tx.device
+    dtype = domain.dtype if hasattr(domain, 'dtype') else tx.dtype
+    
     dx = domain.step('x')
     dy = domain.step('y')
     dz = domain.step('z')
     nx = domain.size('x')
     ny = domain.size('y')
     nz = domain.size('z')
-    
-    # Ensure inputs are torch tensors with correct dtype
-    dtype = getattr(torch, domain.dtype) if isinstance(domain.dtype, str) else domain.dtype
-    up = torch.as_tensor(up, dtype=dtype)
-    tx = torch.as_tensor(tx, dtype=dtype)
-    ty = torch.as_tensor(ty, dtype=dtype)
-    tz = torch.as_tensor(tz, dtype=dtype)
-    
+
+
     # Clip the trajectories within the domain boundaries
-    tx = torch.clamp(tx, domain.lower[1], domain.upper[1])
-    ty = torch.clamp(ty, domain.lower[2], domain.upper[2])
-    tz = torch.clamp(tz, domain.lower[3], domain.upper[3])
-    
+    tx = torch.clamp(tx, domain.lower[1].item(), domain.upper[1].item())
+    ty = torch.clamp(ty, domain.lower[2].item(), domain.upper[2].item())
+    tz = torch.clamp(tz, domain.lower[3].item(), domain.upper[3].item())
+
     # Calculate indices for x, y, and z dimensions
     tix = torch.clamp(torch.floor(tx / dx - 0.5), 0, nx - 2).long()
     tiy = torch.clamp(torch.floor(ty / dy - 0.5), 0, ny - 2).long()
@@ -1900,7 +2009,7 @@ def particles_to_field(up, tx, ty, tz, domain):
     tixp = tix + 1
     tiyp = tiy + 1
     tizp = tiz + 1
-    
+
     # Calculate weights for x, y, and z dimensions
     sx1 = torch.clamp(tx / dx - 0.5 - tix.float(), 0., 1.)
     sy1 = torch.clamp(ty / dy - 0.5 - tiy.float(), 0., 1.)
@@ -1908,17 +2017,21 @@ def particles_to_field(up, tx, ty, tz, domain):
     sx0 = 1 - sx1
     sy0 = 1 - sy1
     sz0 = 1 - sz1
-    
+
     # Broadcast and flatten the particle values
-    up = up.unsqueeze(0).expand_as(tx).flatten()
+    up = up[None, ...]
+    up = torch.broadcast_to(up, tx.shape).flatten()
     
     # Initialize output arrays
-    u = torch.zeros_like(tx, dtype=dtype)
-    w = torch.zeros_like(tx, dtype=dtype)
+    u = torch.zeros(tx.shape, dtype=dtype, device=device)
+    w = torch.zeros(tx.shape, dtype=dtype, device=device)
     
-    # Create time indices
-    nt, nx, ny, nz = tx.shape
-    it = torch.arange(nt, device=tx.device).view(nt, 1, 1, 1).expand_as(tx).flatten()
+    # Get time indices
+    it, ix, iy, iz = domain.indices()
+    it = torch.tensor(it, device=device).flatten()
+    
+    # Flatten all index arrays for scattering
+    it_flat = it.flatten()
     
     # Iterate over all combinations of indices and weights
     for jx, jy, jz, jw in [
@@ -1936,27 +2049,17 @@ def particles_to_field(up, tx, ty, tz, domain):
         jz_flat = jz.flatten()
         jw_flat = jw.flatten()
         
-        # Create linear indices for 4D tensor
-        linear_indices = (it * (nx * ny * nz) + 
-                         jx_flat * (ny * nz) + 
-                         jy_flat * nz + 
-                         jz_flat)
+        # Create linear indices for scattering
+        indices = (it_flat, jx_flat, jy_flat, jz_flat)
         
-        # Use index_put_ for accumulation
-        u_contrib = up * jw_flat
-        u_flat = u.flatten()
-        w_flat = w.flatten()
-        
-        u_flat.index_put_((linear_indices,), u_contrib, accumulate=True)
-        w_flat.index_put_((linear_indices,), jw_flat, accumulate=True)
-        
-        # Reshape back
-        u = u_flat.view(u.shape)
-        w = w_flat.view(w.shape)
-    
+        # Scatter add using index_put_
+        u.index_put_(indices, up * jw_flat, accumulate=True)
+        w.index_put_(indices, jw_flat, accumulate=True)
+
     # Normalize the field values by the weights
     u = u / (w + 1e-8)
     return u
+
 
 # def particles_to_field(up, tx, ty, tz, domain):
 #     '''
@@ -2103,7 +2206,7 @@ def pad_linear(u, paddings):
     duplicate? subfunction
     """
 
-    ur = mod.pad(u, paddings, mode='reflect') # be carefull !
+    ur = mod.pad(u, paddings, mode='reflect') # be careful !
     us = mod.pad(u, paddings, mode='symmetric')
     # ur = np.pad(u, paddings, mode='reflect')
     # us = np.pad(u, paddings, mode='symmetric')
@@ -2112,8 +2215,13 @@ def pad_linear(u, paddings):
 
 
 
-
 def field_to_particles(u_src, tx, ty, tz, domain):
+    """
+    ba careful!
+    """
+    # 确保输入张量在相同的设备上
+    device = u_src.device
+    
     dx = domain.step('x')
     dy = domain.step('y')
     dz = domain.step('z')
@@ -2121,26 +2229,27 @@ def field_to_particles(u_src, tx, ty, tz, domain):
     ny = domain.size('y')
     nz = domain.size('z')
     
-    # 确保输入张量在相同的设备上
-    device = tx.device
-    dtype = domain.dtype
+    # 将步长转换为与输入相同设备和数据类型的张量
+    dx = torch.tensor(dx, dtype=u_src.dtype, device=device)
+    dy = torch.tensor(dy, dtype=u_src.dtype, device=device)
+    dz = torch.tensor(dz, dtype=u_src.dtype, device=device)
     
-    # 将步长转换为张量并移动到相同设备
-    dx_tensor = torch.tensor(dx, dtype=dtype, device=device)
-    dy_tensor = torch.tensor(dy, dtype=dtype, device=device)
-    dz_tensor = torch.tensor(dz, dtype=dtype, device=device)
-    
+    # 确保坐标张量在正确的设备和数据类型上
+    tx = tx.to(device=device, dtype=u_src.dtype)
+    ty = ty.to(device=device, dtype=u_src.dtype)
+    tz = tz.to(device=device, dtype=u_src.dtype)
+
     # Offset from corner cell center in x, y, and z dimensions.
-    dtx = tx / dx_tensor - 0.5
-    dty = ty / dy_tensor - 0.5
-    dtz = tz / dz_tensor - 0.5
+    dtx = tx / dx - 0.5
+    dty = ty / dy - 0.5
+    dtz = tz / dz - 0.5
 
     # Indices for x, y, and z dimensions.
-    tix = torch.floor(dtx).to(torch.int32)
-    tiy = torch.floor(dty).to(torch.int32)
-    tiz = torch.floor(dtz).to(torch.int32)
+    tix = torch.floor(dtx).to(torch.long)
+    tiy = torch.floor(dty).to(torch.long)
+    tiz = torch.floor(dtz).to(torch.long)
     
-    # 使用 clamp 限制索引范围
+    # 使用clamp而不是np.clip
     tix = torch.clamp(tix, -1, nx - 1)
     tiy = torch.clamp(tiy, -1, ny - 1)
     tiz = torch.clamp(tiz, -1, nz - 1)
@@ -2150,64 +2259,44 @@ def field_to_particles(u_src, tx, ty, tz, domain):
     tizp = tiz + 1
 
     # Weights for x, y, and z dimensions.
-    sx1 = dtx - tix.float()
-    sy1 = dty - tiy.float()
-    sz1 = dtz - tiz.float()
-    
-    # 使用 clamp 限制权重范围
-    sx1 = torch.clamp(sx1, 0, 1)
-    sy1 = torch.clamp(sy1, 0, 1)
-    sz1 = torch.clamp(sz1, 0, 1)
-    
-    sx0 = 1.0 - sx1
-    sy0 = 1.0 - sy1
-    sz0 = 1.0 - sz0
+    sx1 = torch.clamp(dtx - tix, 0, 1)
+    sy1 = torch.clamp(dty - tiy, 0, 1)
+    sz1 = torch.clamp(dtz - tiz, 0, 1)
+    sx0 = torch.clamp(tixp - dtx, 0, 1)
+    sy0 = torch.clamp(tiyp - dty, 0, 1)
+    sz0 = torch.clamp(tizp - dtz, 0, 1)
 
     # Pad the source field to handle boundary conditions
-    # 使用 torch.nn.functional.pad 进行填充
-    u_src_padded = torch.nn.functional.pad(u_src.unsqueeze(0).unsqueeze(0), 
-                                          (1, 1, 1, 1, 1, 1), 
-                                          mode='constant', value=0).squeeze(0).squeeze(0)
-
-    # 调整索引以匹配填充后的张量
-    tix_padded = tix + 1
-    tiy_padded = tiy + 1
-    tiz_padded = tiz + 1
-    tixp_padded = tixp + 1
-    tiyp_padded = tiyp + 1
-    tizp_padded = tizp + 1
+    u_src = pad_linear(u_src, [(1, 1), (1, 1), (1, 1)])
 
     # Compute the resulting field
-    res = torch.zeros_like(tx, dtype=dtype, device=device)
+    res = torch.zeros(tx.shape, dtype=u_src.dtype, device=device)
     
-    # 所有8个组合的权重和索引
-    weight_combinations = [
-        (sx0 * sy0 * sz0, tix_padded, tiy_padded, tiz_padded),
-        (sx1 * sy0 * sz0, tixp_padded, tiy_padded, tiz_padded),
-        (sx0 * sy1 * sz0, tix_padded, tiyp_padded, tiz_padded),
-        (sx1 * sy1 * sz0, tixp_padded, tiyp_padded, tiz_padded),
-        (sx0 * sy0 * sz1, tix_padded, tiy_padded, tizp_padded),
-        (sx1 * sy0 * sz1, tixp_padded, tiy_padded, tizp_padded),
-        (sx0 * sy1 * sz1, tix_padded, tiyp_padded, tizp_padded),
-        (sx1 * sy1 * sz1, tixp_padded, tiyp_padded, tizp_padded)
+    # 定义所有8个顶点的索引和权重组合
+    index_weight_pairs = [
+        (tix, tiy, tiz, sx0 * sy0 * sz0),
+        (tixp, tiy, tiz, sx1 * sy0 * sz0),
+        (tix, tiyp, tiz, sx0 * sy1 * sz0),
+        (tixp, tiyp, tiz, sx1 * sy1 * sz0),
+        (tix, tiy, tizp, sx0 * sy0 * sz1),
+        (tixp, tiy, tizp, sx1 * sy0 * sz1),
+        (tix, tiyp, tizp, sx0 * sy1 * sz1),
+        (tixp, tiyp, tizp, sx1 * sy1 * sz1),
     ]
 
-    for weight, ix, iy, iz in weight_combinations:
-        # 使用安全索引访问
-        valid_mask = (ix >= 0) & (ix < u_src_padded.shape[0]) & \
-                    (iy >= 0) & (iy < u_src_padded.shape[1]) & \
-                    (iz >= 0) & (iz < u_src_padded.shape[2])
+    for jx, jy, jz, jw in index_weight_pairs:
+        # 调整索引以匹配填充后的数组（+1）
+        indices_x = torch.clamp(jx + 1, 0, u_src.shape[0] - 1)
+        indices_y = torch.clamp(jy + 1, 0, u_src.shape[1] - 1)
+        indices_z = torch.clamp(jz + 1, 0, u_src.shape[2] - 1)
         
-        # 只对有效索引进行累加
-        valid_weights = weight * valid_mask
-        res += valid_weights * u_src_padded[ix.clamp(0, u_src_padded.shape[0]-1), 
-                                           iy.clamp(0, u_src_padded.shape[1]-1), 
-                                           iz.clamp(0, u_src_padded.shape[2]-1)]
+        res += jw * u_src[indices_x, indices_y, indices_z]
 
     return res
 
 
 # def field_to_particles(u_src, tx, ty, tz, domain):
+
 #     dx = domain.step('x')
 #     dy = domain.step('y')
 #     dz = domain.step('z')
@@ -2255,16 +2344,20 @@ def field_to_particles(u_src, tx, ty, tz, domain):
 #         res += jw * u_src[tix + 1, tiy + 1, tiz + 1]
 #     return res
 
+
+
+
 def report_func(problem, state, epoch, cbinfo):
     global segm_data
     domain = problem.domain
-    coeff = ten2arr( domain.field(state, 'coeff') )
+    coeff = domain.field(state, 'coeff')
     
     tx, ty, tz = state_to_traj(domain, state, mod=torch)
     # tx, ty, tz = np.array(tx), np.array(ty), np.array(tz)
     tx, ty, tz = ten2arr(tx), ten2arr(ty), ten2arr(tz)  
     c_lagrange = ten2arr(transform_c((domain.field(state, 'c')), torch))
-    c_euler_last_slice = lagrange_to_euler_single_slice(c_lagrange, tx, ty, tz, domain, -1)
+    c_euler_last_slice = lagrange_to_euler_single_slice(c_lagrange, tx, ty, tz, domain, -1) # this is a tensor on cpu?
+    c_euler_last_slice = mod.array2tensor(c_euler_last_slice, DTYPE).to(DEVICE) # be careful low efficiency
     
     edema_dice, core_dice = calculate_dice_scores(segm_data, coeff, c_euler_last_slice)
     # Print current parameters.
@@ -2336,12 +2429,13 @@ def plot(problem, state, epoch, frame, cbinfo=None):
     dz = domain.upper[3] / domain.cshape[3]
 
     tx, ty, tz = state_to_traj(domain, state, mod=mod)
-    tx, ty, tz = ten2arr(tx), ten2arr(ty), ten2arr(tz)
+    # tx, ty, tz = ten2arr(tx), ten2arr(ty), ten2arr(tz)
     wm_mids = field_to_particles(wm_data, tx[-1], ty[-1], tz[-1], domain)
     wm_intensities = particles_to_field(wm_mids, tx, ty, tz, domain)
     c_lagrange = ten2arr(transform_c(domain.field(state, 'c'),mod))
+    # print("c_lagrange.shape: ", c_lagrange.shape)
 
-    segm_data = np.ceil(segm_data).astype(int)
+    segm_data = np.ceil( ten2arr(segm_data) ).astype(int) 
     mask_for_cm = np.isin(segm_data, [1, 4])
     # If there is no 1 or 4 in segm_data, switch to checking for 3
     if not mask_for_cm.any():
@@ -2355,10 +2449,10 @@ def plot(problem, state, epoch, frame, cbinfo=None):
     timepoints = np.linspace(1, tx.shape[0] - 1, 6, dtype=int)
     timepoints = np.insert(timepoints, 0, 0)
 
-    x_min = domain.lower[1]
-    y_min = domain.lower[2]
-    x_max = domain.upper[1]
-    y_max = domain.upper[2]
+    x_min = domain.lower[1].item()
+    y_min = domain.lower[2].item()
+    x_max = domain.upper[1].item()
+    y_max = domain.upper[2].item()
     
     # Ensuring th_down is no less than 0.20 and no more than 0.35
     # th_down = tf.clip_by_value(domain.field(state, 'coeff')[5], clip_value_min=0.20, clip_value_max=0.35)
@@ -2373,13 +2467,21 @@ def plot(problem, state, epoch, frame, cbinfo=None):
     ux, uy, uz = compute_displacement_np(tx, ty, tz)
     E = compute_strain_tensor_lagrangian_full_np(ux, uy, uz, dx, dy, dz)
     # Calculate the magnitude of the strain tensor at each time point
-    magnitude = np.sqrt(E[0, 0]**2 + E[0, 1]**2 + E[0, 2]**2 + 
+    magnitude = torch.sqrt(E[0, 0]**2 + E[0, 1]**2 + E[0, 2]**2 + 
                     E[1, 0]**2 + E[1, 1]**2 + E[1, 2]**2 +
                     E[2, 0]**2 + E[2, 1]**2 + E[2, 2]**2)
+
+    E = ten2arr(E)
+    tx = ten2arr(tx)
+    ty = ten2arr(ty)
+    tz = ten2arr(tz)
+    # c_lagrange = ten2arr(c_lagrange)
+    magnitude = ten2arr(magnitude)
+
     
     for i, t in enumerate(timepoints):
-        axes[0, i].scatter(tx[t, :, :, middle_z].flatten(),
-                           ty[t, :, :, middle_z].flatten(),
+        axes[0, i].scatter( tx[t, :, :, middle_z].flatten(),
+                            ty[t, :, :, middle_z].flatten(),
                            marker='o',
                            edgecolor='none',
                            facecolor='r',
@@ -2393,11 +2495,13 @@ def plot(problem, state, epoch, frame, cbinfo=None):
 
         # Compute Eulerian representation for the current time slice
         c_euler_slice = lagrange_to_euler_single_slice(c_lagrange, tx, ty, tz, domain, t)
+
+
         magnitude_slice = lagrange_to_euler_single_slice(magnitude, tx, ty, tz, domain, t)
         vmin = np.min(magnitude_slice)
         vmax = np.max(magnitude_slice)
         
-        axes[1, i].imshow(np.where(pet_data > 0,1,np.nan)[:, :, middle_z].T,
+        axes[1, i].imshow(np.where( ten2arr(pet_data) > 0,1,np.nan)[:, :, middle_z].T,
                           cmap='Reds',
                           extent=extent,
                           origin='lower',
@@ -2408,7 +2512,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[1, i].set_ylim([y_min, y_max])
         axes[1, i].set_axis_off()
         
-        axes[2, i].imshow(np.where(get_core_mask(segm_data),1,np.nan)[:, :, middle_z].T,
+        axes[2, i].imshow(np.where( get_core_mask(segm_data) ,1,np.nan)[:, :, middle_z].T,
                           cmap='Reds',
                           extent=extent,
                           origin='lower',
@@ -2419,7 +2523,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[2, i].set_ylim([y_min, y_max])
         axes[2, i].set_axis_off()
         
-        axes[2, i].imshow(np.where(get_edema_mask(segm_data),1,np.nan)[:, :, middle_z].T,
+        axes[2, i].imshow(np.where( get_edema_mask(segm_data) ,1,np.nan)[:, :, middle_z].T,
                           cmap='Greens',
                           extent=extent,
                           origin='lower',
@@ -2429,7 +2533,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[2, i].set_ylim([y_min, y_max])
         axes[2, i].set_axis_off()
         
-        axes[3, i].imshow(np.where(c_euler_slice[:, :, middle_z] > th_up,1,np.nan).T,
+        axes[3, i].imshow(np.where( c_euler_slice[:, :, middle_z] > ten2arr(th_up), 1, np.nan).T,
                           cmap='Reds',
                           extent=extent,
                           origin='lower',
@@ -2440,7 +2544,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[3, i].set_ylim([y_min, y_max])
         axes[3, i].set_axis_off()
         
-        axes[3, i].imshow(np.where(np.logical_and(c_euler_slice[:, :, middle_z] < th_up, c_euler_slice[:, :, middle_z] > th_down),1,np.nan).T,
+        axes[3, i].imshow(np.where( np.logical_and(c_euler_slice[:, :, middle_z] < ten2arr(th_up), c_euler_slice[:, :, middle_z] > ten2arr(th_down) ),1,np.nan).T,
                           cmap='Greens',
                           extent=extent,
                           origin='lower',
@@ -2452,7 +2556,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         
 
         
-        axes[4, i].imshow(c_euler_slice[:, :, middle_z].T,
+        axes[4, i].imshow( c_euler_slice[:, :, middle_z].T,
                           interpolation='nearest',
                           cmap='gray',
                           extent=extent,
@@ -2465,7 +2569,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[4, i].set_axis_off()
         
         # Add the white matter intensity plot
-        wm_im = axes[5, i].imshow(wm_intensities[t, :, :, middle_z].T,
+        wm_im = axes[5, i].imshow( ten2arr(wm_intensities)[t, :, :, middle_z].T,
                                 interpolation='nearest',
                                 cmap='gray',  # or choose another colormap that suits your data
                                 extent=extent,
@@ -2477,7 +2581,7 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[5, i].set_axis_off()
     
         # Display the magnitude of the strain tensor
-        axes[6, i].imshow(magnitude_slice[:, :, middle_z].T,
+        axes[6, i].imshow( magnitude_slice[:, :, middle_z].T,
                         interpolation='nearest',
                         cmap='Greys',
                         extent=extent,
@@ -2492,6 +2596,10 @@ def plot(problem, state, epoch, frame, cbinfo=None):
         axes[6, i].set_ylim([y_min, y_max])  # Set y limits
         axes[6, i].set_axis_off()
 
+    """
+    segm_data 被改变
+    """
+    segm_data = mod.array2tensor(segm_data, DTYPE).to(DEVICE)
 
     fig.subplots_adjust(hspace=0.005, wspace=0.005)
     fig.tight_layout()
@@ -2742,11 +2850,20 @@ def restore_all_timepoints(data_4D, n):
 
 
 def make_problem(args):
-    """
-    使用numpy array
-    """
+  
     global wm_data, gm_data, csf_data, outside_skull_mask, segm_data,pet_data, dtype, CM_pos, matter_th, TS, gamma_ch
+    
     wm_data, gm_data, csf_data, segm_data, pet_data, outside_skull_mask, CM_pos = process_data(args, matter_th)
+
+    ###################################################################################
+    ## 初始化全局变量 避免重复初始化 加速self.operator(ctx)运算
+    global GLOBAL_M_TILDAS, CSHAPE_SIZE_ZEROS, TENSOR_ONE, MASK1_MASK3
+    GLOBAL_M_TILDAS = m_Tildas(wm_data, gm_data, matter_th) 
+    CSHAPE_SIZE_ZEROS = torch.zeros(args.Nx * args.Ny * args.Nz, dtype=DTYPE, device=DEVICE)
+    TENSOR_ONE = torch.tensor(1.0, dtype=DTYPE, device=DEVICE)
+    MASK1_MASK3 = (segm_data == 1) | (segm_data == 3)
+    ####################################################################################
+
 
     # dtype = np.float32
     dtype = torch.float32
@@ -2822,42 +2939,52 @@ def make_problem(args):
     TS = FK_ts
     return problem, state
 
-
+@timecost
 def main():
+
     global problem, args, wm_data, gm_data, csf_data, outside_skull_mask, pet_w
 
     args = parse_args()
+    
+    args.epochs = 30
+    args.plot_every=30
+    args.report_every=5
+    args.history_every=30
+    args.output_dir = "FK_001-mx-test-timecost"
+
     default_outdir = args.output_dir
     setattr(args, 'outdir', default_outdir)   
     odil.setup_outdir(args,[])
     args.Nt = args.Nx if args.Nt is None else args.Nt
     args.Ny = args.Nx if args.Ny is None else args.Ny
-    args.epochs = 2
-    args.plot_every=1
-    args.report_every=1
-    args.history_every=1
     
+    import time
+    t0 = time.time()
     problem, state = make_problem(args)
     callback = odil.make_callback(problem, args, plot_func=plot, report_func=report_func, history_func=history_func)
     odil.optimize(args, args.optimizer, problem, state, callback)
+    t1 = time.time()
+    print(f"total time: {t1-t0:.4f} s time/epoch={ (t1-t0)/args.epochs:.4f} s")
     
    ######save solution
     domain = problem.domain
     mod = domain.mod
     # Time slices.
     tx, ty, tz = state_to_traj(domain, state, mod=mod)
-    tx, ty, tz = np.array(tx), np.array(ty), np.array(tz)
+    # tx, ty, tz = np.array(tx), np.array(ty), np.array(tz)
 
     # Initialize empty lists to store the data for each tissue type
     wm_results = []
     gm_results = []
     csf_results = []
 
+
     if args.save_last_timestep_solution:
         print("Computing and saving solution for the given time point...")
         # Compute Euler form of 'c'
-        c_lagrange = np.array(transform_c(domain.field(state, 'c'), mod))
-        c_euler_last_slice = lagrange_to_euler_single_slice(c_lagrange, tx, ty, tz, domain, -1)
+        c_lagrange = transform_c(domain.field(state, 'c'), mod)
+
+        c_euler_last_slice = lagrange_to_euler_single_slice( c_lagrange, tx, ty, tz, domain, -1)
 
         # Restore final step arrays
         c_euler_restored = restore(c_euler_last_slice)

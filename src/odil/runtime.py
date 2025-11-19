@@ -61,6 +61,12 @@ if dtype_name in ["float32", "float64"]:
     # dtype = numpy.dtype(dtype_name)
     DTYPE = getattr(torch, dtype_name)
     # dtype = getattr(np, dtype_name)
+    # WNODE_TENSOR = 0.25 * torch.tensor([1,2,1], dtype=DTYPE, device=DEVICE)
+    # WCELL_TENSOR = 0.5 * torch.tensor([1, 1], dtype=DTYPE, device=DEVICE)
+    # WNONE_TENSOR = torch.tensor([1.0], dtype=DTYPE, device=DEVICE)
+    # ZERO_GRID = torch.tensor([0], dtype=torch.int, device=DEVICE)
+    # ONE_GRID = torch.tensor([0, 1], dtype=torch.int, device=DEVICE)
+    ## core.py 需要
 else:
     sys.stderr.write(f"Expected ODIL_DTYPE=float32 or float64, got '{dtype}' \n")
     exit(1)
