@@ -211,7 +211,7 @@ def transform_c(c, mod):
     return c_masked
 
 
-def transform_txyz(tx, ty, tz, x, y, z, mod):
+def transform_txyz(tx, ty, tz, x, y, z, mod=torch):
     global outside_skull_mask
     nth = 0 #first time slice
     #nth = tx.shape[0] - 1 #last time slice
@@ -606,7 +606,7 @@ def pet_loss(pet_data, segm_data, c_euler):
     std_euler = torch.sqrt( (euler_centered**2).sum() )
 
     if count.size() == 0:
-        return TENSOR_ONE.clone()
+        return torch.tensor(1.0, dtype=DTYPE, device=DEVICE)
 
     corr = cov / (std_pet * std_euler)
     loss = 1.0 - corr
@@ -712,8 +712,8 @@ def m_Tildas(WM, GM, th):
 
 def get_D(WM, GM, th, Dw, Dw_ratio):
 
-    # M = m_Tildas(WM, GM, th)
-    M = GLOBAL_M_TILDAS # should be initialized globally.
+    M = m_Tildas(WM, GM, th)
+    # M = GLOBAL_M_TILDAS # should be initialized globally.
 
     D_minus_x = Dw*( M["WM_t_x"] + M["GM_t_x"] / Dw_ratio)
     D_minus_y = Dw*( M["WM_t_y"] + M["GM_t_y"] / Dw_ratio)
@@ -727,6 +727,7 @@ def get_D(WM, GM, th, Dw, Dw_ratio):
 
 
 # @timecost
+
 def operator_adv(ctx):
     global gamma, BC_w, pde_w, balance_w, neg_w, D_ch, R_ch, outside_skull_mask, neg_w,CM_pos, pet_w
 
@@ -927,7 +928,7 @@ def operator_adv(ctx):
     y0 = coeff[3]
     z0 = coeff[4]
     # gamma = tf.constant(1.0,dtype=dtype)*coeff[7]
-    gamma = TENSOR_ONE.clone() * coeff[7]
+    gamma = torch.tensor(1.0, dtype=DTYPE, device=DEVICE) * coeff[7]
     th_down = coeff[5]
     th_up = coeff[6]
     
@@ -1123,8 +1124,8 @@ def normalize_intensities(wm_intensity, gm_intensity, csf_intensity, c):
     below_threshold = total < matter_th
     
     # Avoid division by zero
-    total = torch.where(below_threshold, TENSOR_ONE.clone(), total)
-    equal_proportion = 0.25 * TENSOR_ONE.clone()
+    total = torch.where(below_threshold, torch.tensor(1.0, dtype=DTYPE, device=DEVICE), total)
+    equal_proportion = 0.25 * torch.tensor(1.0, dtype=DTYPE, device=DEVICE)
     
     # Normalize intensities
     normalized_wm = torch.where(below_threshold, equal_proportion, wm_intensity / total)
@@ -1718,10 +1719,6 @@ def particles_to_field_3d_average(up, tx, ty, tz, domain): ## torch version
     ny = domain.size('y')
     nz = domain.size('z')   
     
-    # domain_lower = torch.tensor(domain.lower, device=tx.device, dtype=tx.dtype)
-    # # domain_upper = torch.tensor(domain.upper, device=tx.device, dtype=tx.dtype)
-    # domain_lower = domain.lower.item() * TENSOR_ONE.clone()
-    # domain_upper = domain.upper.item() * TENSOR_ONE.clone()
 
     # Clip the trajectories within the domain boundaries
     tx = torch.clamp(tx, min=domain.lower[1].item(), max=domain.upper[1].item())
@@ -2858,10 +2855,10 @@ def make_problem(args):
     ###################################################################################
     ## 初始化全局变量 避免重复初始化 加速self.operator(ctx)运算
     global GLOBAL_M_TILDAS, CSHAPE_SIZE_ZEROS, TENSOR_ONE, MASK1_MASK3
-    GLOBAL_M_TILDAS = m_Tildas(wm_data, gm_data, matter_th) 
+    # GLOBAL_M_TILDAS = m_Tildas(wm_data, gm_data, matter_th) 
     # CSHAPE_SIZE_ZEROS = torch.zeros(args.Nx * args.Ny * args.Nz, dtype=DTYPE, device=DEVICE)
-    TENSOR_ONE = torch.tensor(1.0, dtype=DTYPE, device=DEVICE)
-    MASK1_MASK3 = (segm_data == 1) | (segm_data == 3)
+    # TENSOR_ONE = torch.tensor(1.0, dtype=DTYPE, device=DEVICE)
+    # MASK1_MASK3 = (segm_data == 1) | (segm_data == 3)
     ####################################################################################
 
 
@@ -2939,18 +2936,18 @@ def make_problem(args):
     TS = FK_ts
     return problem, state
 
-@timecost
+# @timecost
 def main():
 
     global problem, args, wm_data, gm_data, csf_data, outside_skull_mask, pet_w
 
     args = parse_args()
     
-    # args.epochs = 30
-    # args.plot_every=30
-    # args.report_every=5
-    # args.history_every=30
-    args.output_dir = "FK_001-mx-epoch25000"
+    args.epochs = 30
+    args.plot_every=30
+    args.report_every=5
+    args.history_every=30
+    args.output_dir = "FK_001-mx-epoch30"
 
     default_outdir = args.output_dir
     setattr(args, 'outdir', default_outdir)   
@@ -3014,5 +3011,6 @@ def main():
         pass
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
+    
